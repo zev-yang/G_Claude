@@ -3,10 +3,10 @@ backtest.py — walk-forward backtest engine (DailyAuditor).
 """
 import numpy as np
 import pandas as pd
-import lightgbm as lgb
 from tqdm import tqdm
 
-from config import CONFIG, FAMILY_MAP, GROUPS_V3, RED, GREEN, RESET, _zscore
+from config import CONFIG, FAMILY_MAP, GROUPS_V3, RED, GREEN, RESET, _zscore, REGIME_FEATURES
+from modeling import build_model, fit_model
 from safety import check_market_safety_v9
 from logic_matrix import LogicMatrixPredictorV5
 from portfolio import build_sector_clusters, diversify_picks
@@ -63,20 +63,8 @@ class DailyAuditor:
         
         print(f"\n🏃 [Step 4] Simulation Start (Elite Structural Selection)...")
         
-        model = lgb.LGBMRegressor(
-            n_estimators=300,        # <--- 增加迭代次数，100次可能欠拟合
-            learning_rate=0.03,      # <--- 降低学习率，配合更多的迭代次数，搜索更精细
-            max_depth=5,             # <--- 稍微加深，从3层调到5层，允许模型学习特征组合
-            num_leaves=31,           # <--- 配合深度，增加叶子节点数
-            min_data_in_leaf=50,      # <--- 关键新增：强制每个规律必须覆盖50只票
-            reg_lambda=10,           # <--- 显著提高 L2 正则，防止由于深度增加导致的过拟合
-            reg_alpha=2,             # <--- 引入 L1 正则，自动剔除无用特征
-            colsample_bytree=0.7,    # <--- 降低随机特征采样比例，增加特征间的独立性观察
-            subsample=0.8,           # <--- 引入行采样，增加鲁棒性
-            verbose=-1, 
-            random_state=42, 
-            n_jobs=-1
-        )
+        # UPGRADE: model is built from CONFIG['use_ranker'] (LGBMRanker vs LGBMRegressor).
+        model = build_model()
         
         idx = pd.IndexSlice
         logs = []
@@ -221,7 +209,10 @@ class DailyAuditor:
             # D. 模型训练 (修正点2：权重长度匹配 tr_data)
             #w = np.linspace(0.1, 1.0, len(tr_data))
             w = np.geomspace(0.1, 1.0, len(tr_data))
-            model.fit(tr_data[final_active_feats], tr_data['target'], sample_weight=w)
+            # UPGRADE: append regime features (market-state context) to the model input.
+            model_feats = final_active_feats + (REGIME_FEATURES if CONFIG['use_regime_features'] else [])
+            fit_model(model, tr_data[model_feats], tr_data['target'], w,
+                      tr_data.index.get_level_values('date').values)
             
             # E. 预测与回测执行
             try:
@@ -293,7 +284,7 @@ class DailyAuditor:
             # model by magnitude. Now both signals are z-scored and blended; logic only TILTS
             # the ML rank, weighted by CONFIG['logic_tilt']. fused_score becomes a z (ranking
             # is scale-invariant, so downstream selection is unaffected).
-            lgbm_scores = model.predict(valid[final_active_feats])
+            lgbm_scores = model.predict(valid[model_feats])
             if CONFIG['enable_logic_fusion']:
                 logic_engine = LogicMatrixPredictorV5()
                 logic_scores = np.array([

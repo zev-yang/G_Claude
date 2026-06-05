@@ -42,7 +42,16 @@ CONFIG = {
     "enable_logic_fusion": True, # False -> pure LGBM ranking (no LogicMatrix tilt)
     "logic_tilt": 0.3,           # weight of the logic signal in the z-blend
     "embargo": 0,                # extra purge days beyond horizon (0 = match production exactly)
+    # ============ ACCURACY EXPERIMENT TOGGLES (compare each on/off) ============
+    "residualize_label": True,   # target = rank of size-decile-residual fwd return (alpha), not raw
+    "use_regime_features": True, # append market-state features so the model can adapt by regime
+    "use_ranker": True,          # LGBMRanker (lambdarank, date=group) instead of LGBMRegressor
 }
+
+# Market-state context features appended to the model's input (NOT ranked factors).
+# Built in factors.py; constant within a day, so the GBDT uses them to condition
+# stock-factor splits on the regime rather than to rank within a day.
+REGIME_FEATURES = ['mkt_breadth', 'cs_vol_ma5', 'mkt_trend_20', 'market_vol_ratio']
 
 
 def _zscore(x):
@@ -93,6 +102,11 @@ FAMILY_MAP = {
     # Sector heat [NEW] (separate family from sector_rs)
     'sector_heat':    'SectorHeatFam',
     'sector_support': 'SectorSupportFam',
+    # Accumulation / Distribution (主力 footprints) — each its own family
+    'downside_rs':  'DownsideFam',
+    'accum_trend':  'AccumFam',
+    'coil':         'CoilFam',
+    'dist_risk':    'DistFam',
 }
 
 GROUPS_V3 = {
@@ -102,6 +116,7 @@ GROUPS_V3 = {
         'alpha_mom10', 'sector_rs_5', 'sector_rs_10',
         'gap',          # opening gap belongs with momentum
         'gap_ma3',
+        'dist_risk',    # 放量滞涨 distribution signature (near-high + volume + weak return)
     ],
     'Volume': [
         'vol_z', 'buy_force', 'vol_ratio', 'vol_ratio5', 'vol_ratio10',
@@ -111,15 +126,18 @@ GROUPS_V3 = {
         'vpt',                # directional volume-price trend
         'sector_heat',    # sector-level volume × trend activity
         'sector_support', # BUG7 FIX: moved from Reversion — % peers rising is MOMENTUM
+        'accum_trend',    # rising 20d up-volume share (accumulation)
     ],
     'Reversion': [
         'reversal', 'rsi', 'smart_proxy', 'pv_divergence',
         'beta_60d',           # regime-adjusted: low beta = good in bear
         'clv_ma5',     # close location → intraday smart money direction
+        'downside_rs', # holds up on down-market days (support / 抗跌)
     ],
     'Stability': [
         'pv_corr', 'vol_10', 'vol_20', 'vol_5',
         'skew_10', 'skew_20', 'amp_ma_5', 'amp_ma_10', 'amp_ma_20',
         'atr_ratio','skew_5',
+        'coil',        # range compression (蓄势 / coiling)
     ],
 }

@@ -43,10 +43,23 @@ class AlphaLabV25_1:
             df['open_exit']  = open_exit
             df['ret_pnl']    = (open_exit / open_entry) - 1.0
 
-            log_ret          = np.log(open_exit) - np.log(open_entry)
+            log_ret            = np.log(open_exit) - np.log(open_entry)
             df['temp_log_ret'] = log_ret
-            df['target']       = (df.groupby('date')['temp_log_ret']
-                                    .rank(pct=True).astype('float32'))
+            if CONFIG.get('residualize_label', True):
+                # Neutralize the forward return against same-day size-decile peers
+                # (a proxy for size/sector beta), then rank. The target then rewards
+                # stock SELECTION (alpha), not size/beta drift. Toggle off to compare.
+                df['_lab_sq'] = df.groupby('date')['amount'].transform(
+                    lambda x: pd.qcut(x.rank(method='first'), 10, labels=False, duplicates='drop')
+                ).fillna(4).astype('int32')
+                _grp_mean = df.groupby(['date', '_lab_sq'])['temp_log_ret'].transform('mean')
+                df['_resid'] = df['temp_log_ret'] - _grp_mean
+                df['target'] = (df.groupby('date')['_resid']
+                                  .rank(pct=True).astype('float32'))
+                del df['_lab_sq'], df['_resid']
+            else:
+                df['target'] = (df.groupby('date')['temp_log_ret']
+                                  .rank(pct=True).astype('float32'))
             del df['temp_log_ret']
 
             # ── Existing factors (unchanged) ───────────────────────
@@ -301,6 +314,57 @@ class AlphaLabV25_1:
             df['brd_300']  = df['brd_300'].ffill().fillna(df['mkt_breadth'])
             df['brd_1000'] = df['brd_1000'].ffill().fillna(df['mkt_breadth'])
 
+            # ── Accumulation / Distribution factors (主力 footprints) ──────────
+            # Detect institutional accumulation early; avoid buying into distribution.
+            # All vectorised (groupby-transform) and all backward-looking (no look-ahead) —
+            # the only forward-looking column in this file remains the label.
+            #   downside_rs : mean excess return on DOWN-market days over 40d — a supported
+            #                 stock holds up when the market falls (抗跌 / accumulation).
+            #   accum_trend : 10-day change in the 20-day up-volume share — rising buy
+            #                 pressure while price is quiet is the accumulation signature.
+            #   coil        : 40d vs 10d average range — >1 means range is compressing
+            #                 (蓄势 / coiling before a markup).
+            #   dist_risk   : near-high + high-volume + weak 5d return (放量滞涨) — the
+            #                 distribution signature; expected NEGATIVE IC (used to avoid).
+            _mkt_ret = df.groupby('date')['pct_chg'].transform('median')
+            df['_dr_exc']   = (df['pct_chg'] - _mkt_ret).astype('float32')
+            df['_dr_dnexc'] = df['_dr_exc'].where(_mkt_ret < 0)          # down-market days only
+            df['downside_rs'] = g['_dr_dnexc'].transform(
+                lambda x: x.rolling(40, min_periods=5).mean()).astype('float32')
+
+            _is_up = (df['close'] > g['close'].shift(1)).astype('float32')
+            df['_acc_upvol'] = (_is_up * df['volume']).astype('float32')
+            _upsum20  = g['_acc_upvol'].transform(lambda x: x.rolling(20).sum())
+            _volsum20 = g['volume'].transform(lambda x: x.rolling(20).sum())
+            df['_acc_bf20'] = (_upsum20 / (_volsum20 + 1e-9)).astype('float32')
+            df['accum_trend'] = (df['_acc_bf20'] - g['_acc_bf20'].shift(10)).astype('float32')
+
+            df['_coil_tr'] = ((df['high'] - df['low']) / (g['close'].shift(1) + 1e-9)).astype('float32')
+            _coil_r10 = g['_coil_tr'].transform(lambda x: x.rolling(10).mean())
+            _coil_r40 = g['_coil_tr'].transform(lambda x: x.rolling(40).mean())
+            df['coil'] = (_coil_r40 / (_coil_r10 + 1e-9)).astype('float32')
+
+            _nh_r = df.groupby('date')['near_high'].rank(pct=True)
+            _vr_r = df.groupby('date')['vol_ratio'].rank(pct=True)
+            _r5_r = df.groupby('date')['ret_5'].rank(pct=True)
+            df['dist_risk'] = (_nh_r + _vr_r + (1.0 - _r5_r)).astype('float32')
+
+            for _t in ['_dr_exc', '_dr_dnexc', '_acc_upvol', '_acc_bf20', '_coil_tr']:
+                if _t in df.columns: del df[_t]
+            gc.collect()
+
+            # ── Regime features (UPGRADE: market-state context for the model) ──
+            # Market-LEVEL series (same value for every stock on a date). NOT added to
+            # self.factors, so they bypass cross-sectional rank + ICIR selection (which
+            # would be meaningless for a constant-per-date series). They are appended
+            # directly to the model feature set in backtest.py / run.py, letting the GBDT
+            # condition stock-factor splits on the regime (e.g. favour momentum in a bull,
+            # reversal in a bear). Kept as raw levels (not rolling-z) so a persistent bear
+            # still reads as genuinely low. Members: mkt_breadth, cs_vol_ma5 (above),
+            # market_vol_ratio (built below), and mkt_trend_20 (here). LGBM handles the
+            # warmup NaNs natively; all backtest dates are post-warmup anyway.
+            df['mkt_trend_20'] = df.groupby('date')['ret_20'].transform('mean').astype('float32')
+
             # ── Register factors ─────────────────────────────────────
             self.factors = [
                 # ── Momentum ────────────────────────────────────────────
@@ -334,6 +398,11 @@ class AlphaLabV25_1:
                 'amp_ma_5', 'amp_ma_10', 'amp_ma_20',
                 # ── Market / Other ──────────────────────────────────────
                 'vol_z', 'mom_10', 'near_high', 'pv_divergence', 'vol_stability',
+                # ── Accumulation / Distribution (主力 footprints) ────────
+                'downside_rs',   # holds up on down-market days (support / 抗跌)
+                'accum_trend',   # 20d up-volume share, rising = accumulation
+                'coil',          # recent vs longer-term range compression (蓄势)
+                'dist_risk',     # near-high + high-volume + weak-return (放量滞涨)
                 # Removed: 'streak' (ICIR 0.074), 'open_strength' raw (ICIR 0.010)
             ]
             # NOTE: 'streak' removed (ICIR=0.074 — below noise floor)

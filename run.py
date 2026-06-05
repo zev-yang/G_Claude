@@ -8,16 +8,16 @@ import gc
 import traceback
 import numpy as np
 import pandas as pd
-import lightgbm as lgb
 from tqdm import tqdm
 
-from config import CONFIG, FAMILY_MAP, GROUPS_V3, RED, GREEN, RESET, _zscore
+from config import CONFIG, FAMILY_MAP, GROUPS_V3, RED, GREEN, RESET, _zscore, REGIME_FEATURES
 from data_loader import load_universe_audit
 from factors import AlphaLabV25_1
 from safety import check_market_safety_v9
 from logic_matrix import LogicMatrixPredictorV5, IntegratedAuditorV5
 from portfolio import build_sector_clusters, diversify_picks
 from backtest import DailyAuditor
+from modeling import build_model, fit_model
 
 
 def deep_clean_memory():
@@ -257,20 +257,8 @@ if __name__ == "__main__":
         # D. 全量重训 (使用最终确定的 final_selected_feats)
         print(f"\n  > Retraining Model with {len(final_selected_feats)} features...")
 # 🔮 [Step 6] 生产重训模型
-        model_final = lgb.LGBMRegressor(
-            n_estimators=300,        # <--- 增加迭代次数，100次可能欠拟合
-            learning_rate=0.03,      # <--- 降低学习率，配合更多的迭代次数，搜索更精细
-            max_depth=5,             # <--- 稍微加深，从3层调到5层，允许模型学习特征组合
-            num_leaves=31,           # <--- 配合深度，增加叶子节点数
-            min_data_in_leaf=50,      # <--- 关键新增：强制每个规律必须覆盖50只票
-            reg_lambda=10,           # <--- 显著提高 L2 正则，防止由于深度增加导致的过拟合
-            reg_alpha=2,             # <--- 引入 L1 正则，自动剔除无用特征
-            colsample_bytree=0.7,    # <--- 降低随机特征采样比例，增加特征间的独立性观察
-            subsample=0.8,           # <--- 引入行采样，增加鲁棒性
-            verbose=-1, 
-            random_state=42, 
-            n_jobs=-1
-        )
+        # UPGRADE: model from CONFIG['use_ranker'] (LGBMRanker vs LGBMRegressor).
+        model_final = build_model()
         
         # 使用全量历史数据进行最后一次拟合
         # B. 全量重训 (Using Exponential Weighting)
@@ -279,7 +267,10 @@ if __name__ == "__main__":
         # Use geomspace: gives exponentially more weight to recent data
         # This helps the model adapt to the current market style faster
         w_final = np.geomspace(0.1, 1.0, len(train_full)) 
-        model_final.fit(train_full[final_selected_feats], train_full['target'], sample_weight=w_final)
+        # UPGRADE: append regime features (market-state context) to the model input.
+        prod_feats = final_selected_feats + (REGIME_FEATURES if CONFIG['use_regime_features'] else [])
+        fit_model(model_final, train_full[prod_feats], train_full['target'], w_final,
+                  train_full.index.get_level_values('date').values)
 
         
         # E. 最终预测下一交易日
@@ -291,8 +282,8 @@ if __name__ == "__main__":
         
         
         if len(today_df) > 0:
-            # === MODIFIED: 预测时使用 final_selected_feats ===
-            today_df['score'] = model_final.predict(today_df[final_selected_feats])
+            # === MODIFIED: 预测时使用 prod_feats (factors + regime features) ===
+            today_df['score'] = model_final.predict(today_df[prod_feats])
             # ... (后续逻辑) ...
  # ==========================================================
  # === [MODIFIED: Production 实盘统一调用避险模块] ===
