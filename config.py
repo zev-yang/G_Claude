@@ -106,7 +106,6 @@ FAMILY_MAP = {
     'downside_rs':  'DownsideFam',
     'accum_trend':  'AccumFam',
     'coil':         'CoilFam',
-    'dist_risk':    'DistFam',
 }
 
 GROUPS_V3 = {
@@ -116,7 +115,6 @@ GROUPS_V3 = {
         'alpha_mom10', 'sector_rs_5', 'sector_rs_10',
         'gap',          # opening gap belongs with momentum
         'gap_ma3',
-        'dist_risk',    # 放量滞涨 distribution signature (near-high + volume + weak return)
     ],
     'Volume': [
         'vol_z', 'buy_force', 'vol_ratio', 'vol_ratio5', 'vol_ratio10',

@@ -324,8 +324,6 @@ class AlphaLabV25_1:
             #                 pressure while price is quiet is the accumulation signature.
             #   coil        : 40d vs 10d average range — >1 means range is compressing
             #                 (蓄势 / coiling before a markup).
-            #   dist_risk   : near-high + high-volume + weak 5d return (放量滞涨) — the
-            #                 distribution signature; expected NEGATIVE IC (used to avoid).
             _mkt_ret = df.groupby('date')['pct_chg'].transform('median')
             df['_dr_exc']   = (df['pct_chg'] - _mkt_ret).astype('float32')
             df['_dr_dnexc'] = df['_dr_exc'].where(_mkt_ret < 0)          # down-market days only
@@ -343,11 +341,6 @@ class AlphaLabV25_1:
             _coil_r10 = g['_coil_tr'].transform(lambda x: x.rolling(10).mean())
             _coil_r40 = g['_coil_tr'].transform(lambda x: x.rolling(40).mean())
             df['coil'] = (_coil_r40 / (_coil_r10 + 1e-9)).astype('float32')
-
-            _nh_r = df.groupby('date')['near_high'].rank(pct=True)
-            _vr_r = df.groupby('date')['vol_ratio'].rank(pct=True)
-            _r5_r = df.groupby('date')['ret_5'].rank(pct=True)
-            df['dist_risk'] = (_nh_r + _vr_r + (1.0 - _r5_r)).astype('float32')
 
             for _t in ['_dr_exc', '_dr_dnexc', '_acc_upvol', '_acc_bf20', '_coil_tr']:
                 if _t in df.columns: del df[_t]
@@ -402,8 +395,7 @@ class AlphaLabV25_1:
                 'downside_rs',   # holds up on down-market days (support / 抗跌)
                 'accum_trend',   # 20d up-volume share, rising = accumulation
                 'coil',          # recent vs longer-term range compression (蓄势)
-                'dist_risk',     # near-high + high-volume + weak-return (放量滞涨)
-                # Removed: 'streak' (ICIR 0.074), 'open_strength' raw (ICIR 0.010)
+                # Removed: 'dist_risk' (ICIR 0.028 < floor, redundant +0.77 vol_ratio), 'streak' (ICIR 0.074), 'open_strength' raw (ICIR 0.010)
             ]
             # NOTE: 'streak' removed (ICIR=0.074 — below noise floor)
             # NOTE: 'open_strength' (raw) removed (ICIR=0.010 — pure noise)
