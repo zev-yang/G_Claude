@@ -23,7 +23,8 @@ from data_loader import load_universe_audit
 from factors import AlphaLabV25_1
 from backtest import DailyAuditor
 
-NEW_FACTORS = ['downside_rs', 'accum_trend', 'coil', 'dist_risk']
+NEW_FACTORS = ['downside_rs', 'accum_trend', 'coil',
+               'mf_cum20', 'mf_trend', 'elg_cum20']   # moneyflow factors now wired in
 
 
 def main():

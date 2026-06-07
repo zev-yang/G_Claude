@@ -9,6 +9,14 @@ import talib
 
 from config import CONFIG, Timer
 
+# 主力 moneyflow factors (Tushare basic `moneyflow`). Module-level so a quick
+# `from factors import moneyflow_panel` confirms the hook is present; try/except → None
+# means a missing/stale moneyflow_factors.py degrades gracefully instead of crashing.
+try:
+    from moneyflow_factors import moneyflow_panel, MONEYFLOW_FACTORS
+except Exception:
+    moneyflow_panel, MONEYFLOW_FACTORS = None, []
+
 
 class AlphaLabV25_1:
     def __init__(self):
@@ -400,6 +408,42 @@ class AlphaLabV25_1:
             # NOTE: 'streak' removed (ICIR=0.074 — below noise floor)
             # NOTE: 'open_strength' (raw) removed (ICIR=0.010 — pure noise)
 
+            # ── NEW: 主力 moneyflow factors (Tushare basic `moneyflow`) ─────────
+            # Defined in moneyflow_factors.py and joined here on the (date, code)
+            # MultiIndex. They are deliberately LEFT AS NaN where moneyflow is missing
+            # (per-stock rolling warmup, or names absent from the cache) and EXCLUDED
+            # from the global dropna below, so that (a) check_ic's pairwise Spearman
+            # reads a CLEAN IC over the covered cross-section (a neutral 0.5 fill would
+            # add tied ranks and bias IC toward zero) and (b) LGBM uses its native NaN
+            # handling in the backtest. If the cache is absent the run degrades
+            # gracefully — the factors are simply skipped and the pipeline is unchanged.
+            mf_added = []
+            if moneyflow_panel is not None:
+                try:
+                    _mf = moneyflow_panel(
+                        CONFIG.get('moneyflow_path', './tushare_cache/_partial/moneyflow'))
+                    # guard: if the price index and moneyflow index carry different datetime
+                    # resolutions (ns vs us) the join silently yields all-NaN — coerce to match.
+                    _pan_dt = df.index.get_level_values('date').dtype
+                    if _mf.index.get_level_values('date').dtype != _pan_dt:
+                        _mf.index = _mf.index.set_levels(
+                            _mf.index.levels[0].astype(_pan_dt), level='date')
+                    df = df.join(_mf)                   # left join — keeps all price rows
+                    mf_added = [c for c in MONEYFLOW_FACTORS if c in df.columns]
+                    self.factors += mf_added
+                    _cov = df[mf_added].notna().any(axis=1).mean() if mf_added else 0.0
+                    _nn  = {c: int(df[c].notna().sum()) for c in mf_added}
+                    print(f"   ...主力 moneyflow factors joined: {mf_added}  "
+                          f"(coverage {_cov:.0%}; non-NaN {_nn})")
+                    del _mf
+                    gc.collect()
+                except Exception as _e:
+                    print(f"   ...⚠️  主力 moneyflow factors SKIPPED at join "
+                          f"({type(_e).__name__}: {_e}) — pipeline continues without them.")
+            else:
+                print("   ...⚠️  moneyflow_panel unavailable (stale/old moneyflow_factors.py?) "
+                      "— moneyflow factors skipped.")
+
             # ── Cleanup ──────────────────────────────────────────────
             for tmp_col in ['amplitude', 'pct_chg', 'illiq',
                             'is_limit_down', 'is_big_cap']:
@@ -440,7 +484,11 @@ class AlphaLabV25_1:
             del daily_amount, amount_ma20, market_vol_ratio_z, market_vol_ratio_s
             gc.collect()
 
-            df = df.dropna(subset=['adv'] + self.factors)
+            # moneyflow factors are intentionally excluded from this dropna (see the join
+            # block above): keep price rows that lack moneyflow coverage rather than dropping
+            # the whole row. Their mf_* values stay NaN (clean IC + native LGBM handling).
+            _core_feats = [f for f in self.factors if f not in mf_added]
+            df = df.dropna(subset=['adv'] + _core_feats)
 
         print(f"  > Total Samples (Inc. Prediction): {len(df):,}")
         df = df[df['adv']   > 30e6]

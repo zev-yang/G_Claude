@@ -21,6 +21,7 @@ RESET = "\033[0m"
 
 CONFIG = {
     "stock_data_path": "./stock_data_all/*.csv", 
+    "moneyflow_path": "./tushare_cache/_partial/moneyflow",  # Tushare basic `moneyflow` per-date parquet partials (folder), or a single combined .parquet
     "results_dir": "./results_v25_1_production",
     
     "audit_start": auto_start,  
