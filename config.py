@@ -38,7 +38,8 @@ CONFIG = {
     "icir_window": 60,          # === MODIFIED: 专门用于筛选特征的中短期窗口 ===
     # ===================== UPGRADE KEYS =====================
     "max_history_days": 1000,    # was effectively 400 (train_window+100); raise for a real backtest
-    "enable_hedge": True,        # False -> no safety filter (measure raw alpha)
+    "enable_hedge": False,       # OFF permanently — hedge is value-destroying (CAGR ~5%, worse DD).
+                                 # diagnostics force-flips per combo; run.py uses this default.
     "enable_logic_fusion": True, # False -> pure LGBM ranking (no LogicMatrix tilt)
     "logic_tilt": 0.3,           # weight of the logic signal in the z-blend
     "embargo": 0,                # extra purge days beyond horizon (0 = match production exactly)
@@ -106,6 +107,10 @@ FAMILY_MAP = {
     'downside_rs':  'DownsideFam',
     'accum_trend':  'AccumFam',
     'coil':         'CoilFam',
+    # 主力 (Tushare moneyflow) order-flow factors — distinct families; the corr-cull guards overlap
+    'mf_cum20':     'MFCumFam',
+    'mf_trend':     'MFTrendFam',
+    'elg_cum20':    'MFElgFam',
 }
 
 GROUPS_V3 = {
@@ -125,6 +130,9 @@ GROUPS_V3 = {
         'sector_heat',    # sector-level volume × trend activity
         'sector_support', # BUG7 FIX: moved from Reversion — % peers rising is MOMENTUM
         'accum_trend',    # rising 20d up-volume share (accumulation)
+        'mf_cum20',       # 主力 net inflow, 20d cumulative (Tushare moneyflow)
+        'mf_trend',       # 主力 inflow acceleration (recent vs longer pace)
+        'elg_cum20',      # 超大单 net inflow, 20d cumulative
     ],
     'Reversion': [
         'reversal', 'rsi', 'smart_proxy', 'pv_divergence',
