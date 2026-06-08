@@ -1,17 +1,20 @@
 """
 moneyflow_factors.py — 主力 (smart-money) factors from Tushare basic `moneyflow`.
 
-Reads the per-date partial files directly (one pyarrow pass over the folder) — no manual
-combine step. All factors are unit/adjustment-free ratios (净额 / 当日总流入), so 未复权 is a
-non-issue. 主力净额 := (buy_lg+buy_elg) - (sell_lg+sell_elg), NOT net_mf_amount (which is not
-Sum(buy)-Sum(sell); those equal turnover).
+Reads the per-date partial files directly — no manual combine step. All factors are
+unit/adjustment-free ratios (净额 / 当日总流入), so 未复权 is a non-issue. 主力净额 :=
+(buy_lg+buy_elg) - (sell_lg+sell_elg), NOT net_mf_amount (which equals turnover, not net).
 
-MEMORY-FRUGAL (factor math unchanged — identical outputs to the prior version):
-  • amounts downcast to float32 on load (halves the float memory),
-  • frame reduced to the 4 needed columns BEFORE the rolling pass (frees the raw amount +
-    string id columns immediately, instead of carrying ~5M object strings through 3 transforms),
-  • duplicate (date, code) rows dropped so the downstream `df.join` in factors.py can't
-    row-explode on repeated keys.
+READER: uses fastparquet, NOT pyarrow. Some Windows/conda pyarrow builds (seen on
+pyarrow 21) segfault on `pd.read_parquet` with no Python traceback — including via
+pyarrow.dataset. fastparquet reads the same files with no Arrow dependency, so it
+sidesteps that crash entirely (no re-download needed).  ->  pip install fastparquet
+If you later fix/upgrade pyarrow, set _ENGINE = None to use the pandas default again.
+
+MEMORY-FRUGAL (factor math unchanged — identical outputs):
+  • amounts downcast to float32 on load,
+  • frame reduced to the 4 needed columns before the rolling pass,
+  • duplicate (date, code) rows dropped so the downstream df.join can't row-explode.
 
 Used by factors.py: moneyflow_panel(dir) -> per-(date, code) factor columns to .join().
 Standalone check:  python moneyflow_factors.py tushare_cache/_partial/moneyflow
@@ -26,19 +29,21 @@ _COLS = ['ts_code', 'trade_date', 'buy_sm_amount', 'buy_md_amount',
          'buy_lg_amount', 'sell_lg_amount', 'buy_elg_amount', 'sell_elg_amount']
 _AMT = ['buy_sm_amount', 'buy_md_amount', 'buy_lg_amount',
         'sell_lg_amount', 'buy_elg_amount', 'sell_elg_amount']
+_ENGINE = 'fastparquet'      # avoid the pyarrow read segfault; set to None to use pandas default
 
 
 def load_moneyflow(src='tushare_cache/_partial/moneyflow'):
-    """Read every per-date parquet in `src` (folder) in one pyarrow pass, or a single
-    combined parquet if `src` is a file. Only the needed columns; amounts as float32."""
+    """Read every per-date parquet in `src` (folder), or a single combined parquet if `src`
+    is a file. Per-file reads via fastparquet (no Arrow); only the needed columns; float32."""
     if os.path.isfile(src):
-        df = pd.read_parquet(src, columns=_COLS)
+        df = pd.read_parquet(src, columns=_COLS, engine=_ENGINE)
     else:
         files = sorted(glob.glob(os.path.join(src, '*.parquet')))   # ignores any .empty markers
         if not files:
             raise FileNotFoundError(f"no parquet files in {src}")
-        import pyarrow.dataset as ds
-        df = ds.dataset(files, format='parquet').to_table(columns=_COLS).to_pandas()
+        df = pd.concat(
+            (pd.read_parquet(f, columns=_COLS, engine=_ENGINE) for f in files),
+            ignore_index=True)
     for c in _AMT:                                  # halve float memory before the heavy steps
         if c in df.columns and df[c].dtype != 'float32':
             df[c] = pd.to_numeric(df[c], errors='coerce').astype('float32')

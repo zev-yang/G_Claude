@@ -1,0 +1,257 @@
+diff --git a/backtest.py b/backtest.py
+index cc5cde8..b9e1880 100644
+--- a/backtest.py
++++ b/backtest.py
+@@ -9,7 +9,7 @@ from config import CONFIG, FAMILY_MAP, GROUPS_V3, RED, GREEN, RESET, _zscore, RE
+ from modeling import build_model, fit_model
+ from safety import check_market_safety_v9
+ from logic_matrix import LogicMatrixPredictorV5
+-from portfolio import build_sector_clusters, diversify_picks
++from portfolio import build_sector_clusters, diversify_picks, moneyflow_negative_screen
+ 
+ 
+ class DailyAuditor:
+@@ -70,6 +70,14 @@ class DailyAuditor:
+         logs = []
+         step = CONFIG['horizon']
+         trade_dates = sim_dates[::step]
++
++        # ── Factor audit (verification only — purely observational, changes nothing) ──
++        from collections import Counter
++        _sel_count = Counter()       # windows each factor was selected into final_active_feats
++        _imp_accum = {}              # factor -> [per-window LGBM gain importances]
++        _n_fit_windows = 0           # windows that actually fit a model
++        _n_screened = 0              # total names dropped by the moneyflow screen
++        _n_screen_windows = 0        # windows the screen ran in
+         
+         # 预定义战队分组
+ 
+@@ -213,6 +221,17 @@ class DailyAuditor:
+             model_feats = final_active_feats + (REGIME_FEATURES if CONFIG['use_regime_features'] else [])
+             fit_model(model, tr_data[model_feats], tr_data['target'], w,
+                       tr_data.index.get_level_values('date').values)
++
++            # ── Factor audit: tally selection + this window's LGBM gain (observational) ──
++            _n_fit_windows += 1
++            for _f in final_active_feats:
++                _sel_count[_f] += 1
++            try:
++                _gains = model.booster_.feature_importance(importance_type='gain')
++                for _f, _g in zip(model_feats, _gains):
++                    _imp_accum.setdefault(_f, []).append(float(_g))
++            except Exception:
++                pass
+             
+             # E. 预测与回测执行
+             try:
+@@ -298,8 +317,20 @@ class DailyAuditor:
+             cluster_map = build_sector_clusters(
+                 self.panel, t, lookback_days=60, corr_threshold=0.55
+             )
++            # NEGATIVE SCREEN: top-pool by score → drop over-accumulated names → diversify.
++            # (moneyflow_role='screen' only; 'off'/'factor' leave the original behaviour.)
++            if CONFIG.get('moneyflow_role', 'screen') == 'screen':
++                _pool_n = CONFIG.get('moneyflow_screen_pool', 50)
++                _pool = moneyflow_negative_screen(
++                    valid, 'fused_score',
++                    CONFIG.get('moneyflow_screen_cols', ['elg_cum20']),
++                    pool_n=_pool_n, pct=CONFIG.get('moneyflow_screen_pct', 0.90))
++                _n_screened += min(len(valid), _pool_n) - len(_pool)
++                _n_screen_windows += 1
++            else:
++                _pool = valid
+             top = diversify_picks(
+-                valid,
++                _pool,
+                 score_col    = 'fused_score',
+                 top_k        = CONFIG['top_k'],
+                 max_per_cluster = 2,
+@@ -333,6 +364,24 @@ class DailyAuditor:
+                 r_bench = valid['ret_pnl'].mean()
+                 logs.append({'date': t, 'Strat': r_strat, 'Bench': r_bench})
+             
++        # ── Factor audit summary: selection frequency + mean LGBM gain across windows ──
++        _MF = {'mf_cum20', 'mf_trend', 'elg_cum20'}
++        if _n_screen_windows:
++            print(f"\n🧹 [Moneyflow Screen] role={CONFIG.get('moneyflow_role')} "
++                  f"cols={CONFIG.get('moneyflow_screen_cols', ['elg_cum20'])} "
++                  f"pool={CONFIG.get('moneyflow_screen_pool', 50)} pct>{CONFIG.get('moneyflow_screen_pct', 0.90)} "
++                  f"-> dropped {_n_screened/_n_screen_windows:.1f} names/window on average "
++                  f"({_n_screen_windows} windows)")
++        print(f"\n📋 [Factor Audit] selection & mean LGBM gain over {_n_fit_windows} fit windows")
++        print(f"  {'factor':<18}{'sel/N':>9}{'sel%':>7}{'meanGain':>11}")
++        _rows = [(f, _sel_count.get(f, 0),
++                  _sel_count.get(f, 0) / max(_n_fit_windows, 1) * 100,
++                  (sum(_imp_accum[f]) / len(_imp_accum[f])) if _imp_accum.get(f) else 0.0)
++                 for f in self.feats]
++        for f, _sel, _pct, _mg in sorted(_rows, key=lambda r: (-r[1], -r[3])):
++            _tag = '  <== MoneyFlow' if f in _MF else ''
++            print(f"  {f:<18}{_sel:>5}/{_n_fit_windows:<3}{_pct:>5.0f}%{_mg:>11.1f}{_tag}")
++
+         return pd.DataFrame(logs).set_index('date'), model
+ 
+     def analyze(self, df):
+diff --git a/config.py b/config.py
+index 448a7bc..a7fbd15 100644
+--- a/config.py
++++ b/config.py
+@@ -21,6 +21,11 @@ RESET = "\033[0m"
+ 
+ CONFIG = {
+     "stock_data_path": "./stock_data_all/*.csv", 
++    "moneyflow_path": "./tushare_cache/_partial/moneyflow",  # Tushare basic `moneyflow` per-date parquet partials (folder), or a single combined .parquet
++    "moneyflow_role": "screen",              # 'screen' = negative screen (NOT a model feature) | 'factor' = model feature | 'off' = 48-factor baseline
++    "moneyflow_screen_cols": ["elg_cum20"],  # ranked moneyflow col(s) the screen uses: ["elg_cum20"] (sharpest reversal) | ["mf_cum20"] | ["elg_cum20","mf_cum20"]
++    "moneyflow_screen_pool": 50,             # take top-N by model score, drop over-accumulated, then diversify to top_k
++    "moneyflow_screen_pct": 0.90,            # drop names above this cross-sectional 主力-accumulation rank (top decile)
+     "results_dir": "./results_v25_1_production",
+     
+     "audit_start": auto_start,  
+diff --git a/factors.py b/factors.py
+index 2a3e6a5..af04c71 100644
+--- a/factors.py
++++ b/factors.py
+@@ -9,6 +9,14 @@ import talib
+ 
+ from config import CONFIG, Timer
+ 
++# 主力 moneyflow factors (Tushare basic `moneyflow`). Module-level so a quick
++# `from factors import moneyflow_panel` confirms the hook is present; try/except → None
++# means a missing/stale moneyflow_factors.py degrades gracefully instead of crashing.
++try:
++    from moneyflow_factors import moneyflow_panel, MONEYFLOW_FACTORS
++except Exception:
++    moneyflow_panel, MONEYFLOW_FACTORS = None, []
++
+ 
+ class AlphaLabV25_1:
+     def __init__(self):
+@@ -400,6 +408,55 @@ class AlphaLabV25_1:
+             # NOTE: 'streak' removed (ICIR=0.074 — below noise floor)
+             # NOTE: 'open_strength' (raw) removed (ICIR=0.010 — pure noise)
+ 
++            # ── NEW: 主力 moneyflow factors (Tushare basic `moneyflow`) ─────────
++            # Defined in moneyflow_factors.py and joined here on the (date, code)
++            # MultiIndex. They are deliberately LEFT AS NaN where moneyflow is missing
++            # (per-stock rolling warmup, or names absent from the cache) and EXCLUDED
++            # from the global dropna below, so that (a) check_ic's pairwise Spearman
++            # reads a CLEAN IC over the covered cross-section (a neutral 0.5 fill would
++            # add tied ranks and bias IC toward zero) and (b) LGBM uses its native NaN
++            # handling in the backtest. If the cache is absent the run degrades
++            # gracefully — the factors are simply skipped and the pipeline is unchanged.
++            # ROLE: CONFIG['moneyflow_role'] decides how moneyflow is used —
++            #   'screen' (default): ranked into the panel as a NEGATIVE SCREEN (drop the most-
++            #            accumulated names before final selection); NOT a model feature.
++            #   'factor': added to self.factors as model features (the older behaviour).
++            #   'off'   : not joined at all (== the 48-factor baseline).
++            # Columns are cross-sectionally pct-ranked per date; NaN where moneyflow is missing
++            # (warmup / uncovered) — and NaN names are never screened or dropped.
++            mf_added = []                                  # only non-empty in 'factor' mode
++            _mf_role = CONFIG.get('moneyflow_role', 'screen')
++            if moneyflow_panel is not None and _mf_role in ('screen', 'factor'):
++                try:
++                    _mf = moneyflow_panel(
++                        CONFIG.get('moneyflow_path', './tushare_cache/_partial/moneyflow'))
++                    # guard: ns vs us datetime-resolution mismatch silently yields an all-NaN join
++                    _pan_dt = df.index.get_level_values('date').dtype
++                    if _mf.index.get_level_values('date').dtype != _pan_dt:
++                        _mf.index = _mf.index.set_levels(
++                            _mf.index.levels[0].astype(_pan_dt), level='date')
++                    df = df.join(_mf)                       # left join — keeps all price rows
++                    _cols = [c for c in MONEYFLOW_FACTORS if c in df.columns]
++                    _cov = df[_cols].notna().any(axis=1).mean() if _cols else 0.0
++                    if _mf_role == 'factor':
++                        self.factors += _cols              # ranked later by the standard loop
++                        mf_added = _cols
++                        print(f"   ...主力 moneyflow joined as MODEL FACTORS: {_cols} (coverage {_cov:.0%})")
++                    else:  # 'screen' — not in self.factors, so rank here for the screen to use
++                        for c in _cols:
++                            df[c] = df.groupby(level='date')[c].rank(pct=True).astype('float32')
++                        print(f"   ...主力 moneyflow joined as SCREEN columns (NOT model features): "
++                              f"{_cols} (coverage {_cov:.0%})")
++                    del _mf
++                    gc.collect()
++                except Exception as _e:
++                    print(f"   ...⚠️  主力 moneyflow SKIPPED at join "
++                          f"({type(_e).__name__}: {_e}) — pipeline continues without it.")
++            else:
++                print(f"   ...moneyflow_role='{_mf_role}'"
++                      + (" / moneyflow_panel unavailable" if moneyflow_panel is None else "")
++                      + " — moneyflow not joined (48-factor baseline).")
++
+             # ── Cleanup ──────────────────────────────────────────────
+             for tmp_col in ['amplitude', 'pct_chg', 'illiq',
+                             'is_limit_down', 'is_big_cap']:
+@@ -440,7 +497,11 @@ class AlphaLabV25_1:
+             del daily_amount, amount_ma20, market_vol_ratio_z, market_vol_ratio_s
+             gc.collect()
+ 
+-            df = df.dropna(subset=['adv'] + self.factors)
++            # moneyflow factors are intentionally excluded from this dropna (see the join
++            # block above): keep price rows that lack moneyflow coverage rather than dropping
++            # the whole row. Their mf_* values stay NaN (clean IC + native LGBM handling).
++            _core_feats = [f for f in self.factors if f not in mf_added]
++            df = df.dropna(subset=['adv'] + _core_feats)
+ 
+         print(f"  > Total Samples (Inc. Prediction): {len(df):,}")
+         df = df[df['adv']   > 30e6]
+diff --git a/portfolio.py b/portfolio.py
+index 3024c37..a70d091 100644
+--- a/portfolio.py
++++ b/portfolio.py
+@@ -106,3 +106,21 @@ def diversify_picks(df, score_col='fused_score', top_k=30,
+             break
+  
+     return df.loc[selected] if selected else df.head(top_k)
++
++
++def moneyflow_negative_screen(df, score_col, screen_cols, pool_n=50, pct=0.90):
++    """
++    Negative screen: take the top `pool_n` names by `score_col`, then DROP any whose recent
++    主力 accumulation is in the top decile (cross-sectional pct-rank > `pct`) on ANY of
++    `screen_cols`. The screen columns are already per-date pct-ranks (0..1); NaN (no moneyflow
++    data) is never dropped (NaN > pct evaluates False). Returns the surviving pool for
++    diversify_picks. Used identically by the backtest and production paths so they stay in sync.
++    """
++    pool = df.nlargest(pool_n, score_col)
++    if not screen_cols:
++        return pool
++    drop = pd.Series(False, index=pool.index)
++    for c in screen_cols:
++        if c in pool.columns:
++            drop = drop | (pool[c] > pct)          # NaN > pct -> False -> kept
++    return pool[~drop]
+diff --git a/run.py b/run.py
+index d40773a..e1e1d32 100644
+--- a/run.py
++++ b/run.py
+@@ -15,7 +15,7 @@ from data_loader import load_universe_audit
+ from factors import AlphaLabV25_1
+ from safety import check_market_safety_v9
+ from logic_matrix import LogicMatrixPredictorV5, IntegratedAuditorV5
+-from portfolio import build_sector_clusters, diversify_picks
++from portfolio import build_sector_clusters, diversify_picks, moneyflow_negative_screen
+ from backtest import DailyAuditor
+ from modeling import build_model, fit_model
+ 
+@@ -359,8 +359,19 @@ if __name__ == "__main__":
+                 f"for {len(cluster_map_prod)} stocks")
+             today_df['score'] = fused_prod # 覆盖为融合分数
+             #today_breadth_prod = prod_today_dict.get('mkt_breadth', 0.5)
++            # NEGATIVE SCREEN: drop over-accumulated names from the top pool before diversifying
++            if CONFIG.get('moneyflow_role', 'screen') == 'screen':
++                _pool_n = CONFIG.get('moneyflow_screen_pool', 50)
++                _pool = moneyflow_negative_screen(
++                    today_df, 'score',
++                    CONFIG.get('moneyflow_screen_cols', ['elg_cum20']),
++                    pool_n=_pool_n, pct=CONFIG.get('moneyflow_screen_pct', 0.90))
++                print(f"  🧹 Moneyflow screen ({CONFIG.get('moneyflow_screen_cols', ['elg_cum20'])}): "
++                      f"kept {len(_pool)} of top-{min(len(today_df), _pool_n)} (dropped over-accumulated)")
++            else:
++                _pool = today_df
+             best = diversify_picks(
+-                today_df,
++                _pool,
+                 score_col    = 'score',
+                 top_k        = 30,
+                 max_per_cluster = 2,

@@ -417,32 +417,45 @@ class AlphaLabV25_1:
             # add tied ranks and bias IC toward zero) and (b) LGBM uses its native NaN
             # handling in the backtest. If the cache is absent the run degrades
             # gracefully — the factors are simply skipped and the pipeline is unchanged.
-            mf_added = []
-            if moneyflow_panel is not None:
+            # ROLE: CONFIG['moneyflow_role'] decides how moneyflow is used —
+            #   'screen' (default): ranked into the panel as a NEGATIVE SCREEN (drop the most-
+            #            accumulated names before final selection); NOT a model feature.
+            #   'factor': added to self.factors as model features (the older behaviour).
+            #   'off'   : not joined at all (== the 48-factor baseline).
+            # Columns are cross-sectionally pct-ranked per date; NaN where moneyflow is missing
+            # (warmup / uncovered) — and NaN names are never screened or dropped.
+            mf_added = []                                  # only non-empty in 'factor' mode
+            _mf_role = CONFIG.get('moneyflow_role', 'screen')
+            if moneyflow_panel is not None and _mf_role in ('screen', 'factor'):
                 try:
                     _mf = moneyflow_panel(
                         CONFIG.get('moneyflow_path', './tushare_cache/_partial/moneyflow'))
-                    # guard: if the price index and moneyflow index carry different datetime
-                    # resolutions (ns vs us) the join silently yields all-NaN — coerce to match.
+                    # guard: ns vs us datetime-resolution mismatch silently yields an all-NaN join
                     _pan_dt = df.index.get_level_values('date').dtype
                     if _mf.index.get_level_values('date').dtype != _pan_dt:
                         _mf.index = _mf.index.set_levels(
                             _mf.index.levels[0].astype(_pan_dt), level='date')
-                    df = df.join(_mf)                   # left join — keeps all price rows
-                    mf_added = [c for c in MONEYFLOW_FACTORS if c in df.columns]
-                    self.factors += mf_added
-                    _cov = df[mf_added].notna().any(axis=1).mean() if mf_added else 0.0
-                    _nn  = {c: int(df[c].notna().sum()) for c in mf_added}
-                    print(f"   ...主力 moneyflow factors joined: {mf_added}  "
-                          f"(coverage {_cov:.0%}; non-NaN {_nn})")
+                    df = df.join(_mf)                       # left join — keeps all price rows
+                    _cols = [c for c in MONEYFLOW_FACTORS if c in df.columns]
+                    _cov = df[_cols].notna().any(axis=1).mean() if _cols else 0.0
+                    if _mf_role == 'factor':
+                        self.factors += _cols              # ranked later by the standard loop
+                        mf_added = _cols
+                        print(f"   ...主力 moneyflow joined as MODEL FACTORS: {_cols} (coverage {_cov:.0%})")
+                    else:  # 'screen' — not in self.factors, so rank here for the screen to use
+                        for c in _cols:
+                            df[c] = df.groupby(level='date')[c].rank(pct=True).astype('float32')
+                        print(f"   ...主力 moneyflow joined as SCREEN columns (NOT model features): "
+                              f"{_cols} (coverage {_cov:.0%})")
                     del _mf
                     gc.collect()
                 except Exception as _e:
-                    print(f"   ...⚠️  主力 moneyflow factors SKIPPED at join "
-                          f"({type(_e).__name__}: {_e}) — pipeline continues without them.")
+                    print(f"   ...⚠️  主力 moneyflow SKIPPED at join "
+                          f"({type(_e).__name__}: {_e}) — pipeline continues without it.")
             else:
-                print("   ...⚠️  moneyflow_panel unavailable (stale/old moneyflow_factors.py?) "
-                      "— moneyflow factors skipped.")
+                print(f"   ...moneyflow_role='{_mf_role}'"
+                      + (" / moneyflow_panel unavailable" if moneyflow_panel is None else "")
+                      + " — moneyflow not joined (48-factor baseline).")
 
             # ── Cleanup ──────────────────────────────────────────────
             for tmp_col in ['amplitude', 'pct_chg', 'illiq',

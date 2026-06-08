@@ -9,7 +9,7 @@ from config import CONFIG, FAMILY_MAP, GROUPS_V3, RED, GREEN, RESET, _zscore, RE
 from modeling import build_model, fit_model
 from safety import check_market_safety_v9
 from logic_matrix import LogicMatrixPredictorV5
-from portfolio import build_sector_clusters, diversify_picks
+from portfolio import build_sector_clusters, diversify_picks, moneyflow_negative_screen
 
 
 class DailyAuditor:
@@ -70,6 +70,14 @@ class DailyAuditor:
         logs = []
         step = CONFIG['horizon']
         trade_dates = sim_dates[::step]
+
+        # ── Factor audit (verification only — purely observational, changes nothing) ──
+        from collections import Counter
+        _sel_count = Counter()       # windows each factor was selected into final_active_feats
+        _imp_accum = {}              # factor -> [per-window LGBM gain importances]
+        _n_fit_windows = 0           # windows that actually fit a model
+        _n_screened = 0              # total names dropped by the moneyflow screen
+        _n_screen_windows = 0        # windows the screen ran in
         
         # 预定义战队分组
 
@@ -213,6 +221,17 @@ class DailyAuditor:
             model_feats = final_active_feats + (REGIME_FEATURES if CONFIG['use_regime_features'] else [])
             fit_model(model, tr_data[model_feats], tr_data['target'], w,
                       tr_data.index.get_level_values('date').values)
+
+            # ── Factor audit: tally selection + this window's LGBM gain (observational) ──
+            _n_fit_windows += 1
+            for _f in final_active_feats:
+                _sel_count[_f] += 1
+            try:
+                _gains = model.booster_.feature_importance(importance_type='gain')
+                for _f, _g in zip(model_feats, _gains):
+                    _imp_accum.setdefault(_f, []).append(float(_g))
+            except Exception:
+                pass
             
             # E. 预测与回测执行
             try:
@@ -298,8 +317,20 @@ class DailyAuditor:
             cluster_map = build_sector_clusters(
                 self.panel, t, lookback_days=60, corr_threshold=0.55
             )
+            # NEGATIVE SCREEN: top-pool by score → drop over-accumulated names → diversify.
+            # (moneyflow_role='screen' only; 'off'/'factor' leave the original behaviour.)
+            if CONFIG.get('moneyflow_role', 'screen') == 'screen':
+                _pool_n = CONFIG.get('moneyflow_screen_pool', 50)
+                _pool = moneyflow_negative_screen(
+                    valid, 'fused_score',
+                    CONFIG.get('moneyflow_screen_cols', ['elg_cum20']),
+                    pool_n=_pool_n, pct=CONFIG.get('moneyflow_screen_pct', 0.90))
+                _n_screened += min(len(valid), _pool_n) - len(_pool)
+                _n_screen_windows += 1
+            else:
+                _pool = valid
             top = diversify_picks(
-                valid,
+                _pool,
                 score_col    = 'fused_score',
                 top_k        = CONFIG['top_k'],
                 max_per_cluster = 2,
@@ -333,6 +364,24 @@ class DailyAuditor:
                 r_bench = valid['ret_pnl'].mean()
                 logs.append({'date': t, 'Strat': r_strat, 'Bench': r_bench})
             
+        # ── Factor audit summary: selection frequency + mean LGBM gain across windows ──
+        _MF = {'mf_cum20', 'mf_trend', 'elg_cum20'}
+        if _n_screen_windows:
+            print(f"\n🧹 [Moneyflow Screen] role={CONFIG.get('moneyflow_role')} "
+                  f"cols={CONFIG.get('moneyflow_screen_cols', ['elg_cum20'])} "
+                  f"pool={CONFIG.get('moneyflow_screen_pool', 50)} pct>{CONFIG.get('moneyflow_screen_pct', 0.90)} "
+                  f"-> dropped {_n_screened/_n_screen_windows:.1f} names/window on average "
+                  f"({_n_screen_windows} windows)")
+        print(f"\n📋 [Factor Audit] selection & mean LGBM gain over {_n_fit_windows} fit windows")
+        print(f"  {'factor':<18}{'sel/N':>9}{'sel%':>7}{'meanGain':>11}")
+        _rows = [(f, _sel_count.get(f, 0),
+                  _sel_count.get(f, 0) / max(_n_fit_windows, 1) * 100,
+                  (sum(_imp_accum[f]) / len(_imp_accum[f])) if _imp_accum.get(f) else 0.0)
+                 for f in self.feats]
+        for f, _sel, _pct, _mg in sorted(_rows, key=lambda r: (-r[1], -r[3])):
+            _tag = '  <== MoneyFlow' if f in _MF else ''
+            print(f"  {f:<18}{_sel:>5}/{_n_fit_windows:<3}{_pct:>5.0f}%{_mg:>11.1f}{_tag}")
+
         return pd.DataFrame(logs).set_index('date'), model
 
     def analyze(self, df):

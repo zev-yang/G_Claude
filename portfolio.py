@@ -106,3 +106,21 @@ def diversify_picks(df, score_col='fused_score', top_k=30,
             break
  
     return df.loc[selected] if selected else df.head(top_k)
+
+
+def moneyflow_negative_screen(df, score_col, screen_cols, pool_n=50, pct=0.90):
+    """
+    Negative screen: take the top `pool_n` names by `score_col`, then DROP any whose recent
+    主力 accumulation is in the top decile (cross-sectional pct-rank > `pct`) on ANY of
+    `screen_cols`. The screen columns are already per-date pct-ranks (0..1); NaN (no moneyflow
+    data) is never dropped (NaN > pct evaluates False). Returns the surviving pool for
+    diversify_picks. Used identically by the backtest and production paths so they stay in sync.
+    """
+    pool = df.nlargest(pool_n, score_col)
+    if not screen_cols:
+        return pool
+    drop = pd.Series(False, index=pool.index)
+    for c in screen_cols:
+        if c in pool.columns:
+            drop = drop | (pool[c] > pct)          # NaN > pct -> False -> kept
+    return pool[~drop]

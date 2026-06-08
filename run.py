@@ -15,7 +15,7 @@ from data_loader import load_universe_audit
 from factors import AlphaLabV25_1
 from safety import check_market_safety_v9
 from logic_matrix import LogicMatrixPredictorV5, IntegratedAuditorV5
-from portfolio import build_sector_clusters, diversify_picks
+from portfolio import build_sector_clusters, diversify_picks, moneyflow_negative_screen
 from backtest import DailyAuditor
 from modeling import build_model, fit_model
 
@@ -359,8 +359,19 @@ if __name__ == "__main__":
                 f"for {len(cluster_map_prod)} stocks")
             today_df['score'] = fused_prod # 覆盖为融合分数
             #today_breadth_prod = prod_today_dict.get('mkt_breadth', 0.5)
+            # NEGATIVE SCREEN: drop over-accumulated names from the top pool before diversifying
+            if CONFIG.get('moneyflow_role', 'screen') == 'screen':
+                _pool_n = CONFIG.get('moneyflow_screen_pool', 50)
+                _pool = moneyflow_negative_screen(
+                    today_df, 'score',
+                    CONFIG.get('moneyflow_screen_cols', ['elg_cum20']),
+                    pool_n=_pool_n, pct=CONFIG.get('moneyflow_screen_pct', 0.90))
+                print(f"  🧹 Moneyflow screen ({CONFIG.get('moneyflow_screen_cols', ['elg_cum20'])}): "
+                      f"kept {len(_pool)} of top-{min(len(today_df), _pool_n)} (dropped over-accumulated)")
+            else:
+                _pool = today_df
             best = diversify_picks(
-                today_df,
+                _pool,
                 score_col    = 'score',
                 top_k        = 30,
                 max_per_cluster = 2,

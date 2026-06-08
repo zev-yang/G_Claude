@@ -22,6 +22,10 @@ RESET = "\033[0m"
 CONFIG = {
     "stock_data_path": "./stock_data_all/*.csv", 
     "moneyflow_path": "./tushare_cache/_partial/moneyflow",  # Tushare basic `moneyflow` per-date parquet partials (folder), or a single combined .parquet
+    "moneyflow_role": "screen",              # 'screen' = negative screen (NOT a model feature) | 'factor' = model feature | 'off' = 48-factor baseline
+    "moneyflow_screen_cols": ["elg_cum20"],  # ranked moneyflow col(s) the screen uses: ["elg_cum20"] (sharpest reversal) | ["mf_cum20"] | ["elg_cum20","mf_cum20"]
+    "moneyflow_screen_pool": 50,             # take top-N by model score, drop over-accumulated, then diversify to top_k
+    "moneyflow_screen_pct": 0.90,            # drop names above this cross-sectional 主力-accumulation rank (top decile)
     "results_dir": "./results_v25_1_production",
     
     "audit_start": auto_start,  
