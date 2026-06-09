@@ -358,6 +358,10 @@ if __name__ == "__main__":
             print(f"  Sector clusters built: {len(set(cluster_map_prod.values()))} clusters "
                 f"for {len(cluster_map_prod)} stocks")
             today_df['score'] = fused_prod # 覆盖为融合分数
+            # ── Layer-4 资金流 overlay (与回测一致): final = zscore(base) + MF_WEIGHT·mf_score ──
+            if CONFIG.get('USE_MONEYFLOW', False) and 'mf_score' in today_df.columns:
+                today_df['score'] = (_zscore(today_df['score'])
+                                     + CONFIG.get('MF_WEIGHT', 0.15) * today_df['mf_score'].fillna(0.0).values)
             #today_breadth_prod = prod_today_dict.get('mkt_breadth', 0.5)
             # NEGATIVE SCREEN: drop over-accumulated names from the top pool before diversifying
             if CONFIG.get('moneyflow_role', 'screen') == 'screen':

@@ -26,6 +26,21 @@ CONFIG = {
     "moneyflow_screen_cols": ["elg_cum20"],  # ranked moneyflow col(s) the screen uses: ["elg_cum20"] (sharpest reversal) | ["mf_cum20"] | ["elg_cum20","mf_cum20"]
     "moneyflow_screen_pool": 50,             # take top-N by model score, drop over-accumulated, then diversify to top_k
     "moneyflow_screen_pct": 0.90,            # drop names above this cross-sectional 主力-accumulation rank (top decile)
+    # ════════ Layer-4 资金流 overlay (线性叠加, 不喂 LGBM) ════════════════════════════
+    # 全部写死、point-in-time、A/B 只作 go/no-go 观察 (绝不在全样本上调 MF_WEIGHT 等参数)。
+    "USE_MONEYFLOW": True,        # 总开关; False=不叠加 (与现有 screen 独立)
+    "MF_WEIGHT": 0.15,           # 写死: final = zscore(base) + MF_WEIGHT·mf_score
+    "MF_W_STRENGTH": 0.6,        # 写死: mf_score 内 strength 权重
+    "MF_W_ACCEL": 0.2,           # 写死: accel 权重 (mf_accel = strength_8 - strength_20)
+    "MF_W_RETAIL": 0.2,          # 写死: retail_contrary 权重
+    "RETAIL_CONTRARY_ENABLE": True,
+    "RETAIL_CONTRARY_PERCENTILE": 0.90,  # 写死: 小单净流出【当日横截面】前 10%
+    "RETAIL_CONTRARY_VOL_RATIO": 1.2,    # 写死: 放量倍数 (当日量 / 20日均量)
+    "RETAIL_CONTRARY_BIAS_LIMIT": 0.15,  # 写死: |close/ma20 - 1| 上限 (乖离约束)
+    # ── DEFERRED (数据/择时未就绪, 留 False 以备后用) ───────────────────────────────
+    "USE_MARKET_POSITION": False,  # Layer-1 大盘仓位 (需 moneyflow_dc; 归到"晚点升 V9")
+    "MF_INDUSTRY_ENABLE": False,   # Layer-2 行业加分 (需 moneyflow_ind_dc + 个股→行业映射)
+    "MF_CONCEPT_ENABLE": False,    # Layer-3 概念加分 (默认关)
     "results_dir": "./results_v25_1_production",
     
     "audit_start": auto_start,  

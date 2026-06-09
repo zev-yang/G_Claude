@@ -47,6 +47,24 @@ class DailyAuditor:
         
         print(pd.DataFrame(stats).sort_values('ICIR', ascending=False).to_string(index=False))
 
+        # ── Layer-4 观察: mf_score 自身 IC + 分层多空 (纯展示, 不参与选股/调参) ──────────
+        # target = 残差化后的前向收益【排名】, 故 spread 是 rank 单位的单调性信号。
+        if 'mf_score' in valid_y.columns:
+            _mic, _msp = [], []
+            for _d, _g in valid_y.groupby(level='date'):
+                _gg = _g.dropna(subset=['mf_score', 'target'])
+                if len(_gg) < 10:
+                    continue
+                _mic.append(_gg['mf_score'].corr(_gg['target'], method='spearman'))
+                _q = _gg['mf_score'].rank(pct=True)
+                _msp.append(_gg.loc[_q > 0.8, 'target'].mean() - _gg.loc[_q < 0.2, 'target'].mean())
+            if _mic:
+                _mic = np.array(_mic, dtype=float); _msp = np.array(_msp, dtype=float)
+                print(f"\n💰 [Layer-4 mf_score] 自身 IC={np.nanmean(_mic):.4f} "
+                      f"ICIR={np.nanmean(_mic) / (np.nanstd(_mic) + 1e-9):.2f} "
+                      f"| 分层多空(Top20%-Bot20%)={np.nanmean(_msp):.4f} "
+                      f"(IC/spread≈0 → overlay 无增量, 考虑 USE_MONEYFLOW=False)")
+
     def run_simulation(self):
         # 1. 确定回测时间范围
         start_date = pd.Timestamp(CONFIG['audit_start'])
@@ -313,6 +331,10 @@ class DailyAuditor:
                 valid['fused_score'] = _zscore(lgbm_scores) + CONFIG['logic_tilt'] * _zscore(logic_scores)
             else:
                 valid['fused_score'] = lgbm_scores
+            # ── Layer-4 资金流 overlay: final = zscore(base) + MF_WEIGHT·mf_score (NOT in LGBM) ──
+            if CONFIG.get('USE_MONEYFLOW', False) and 'mf_score' in valid.columns:
+                valid['fused_score'] = (_zscore(valid['fused_score'])
+                                        + CONFIG.get('MF_WEIGHT', 0.15) * valid['mf_score'].fillna(0.0).values)
             today_breadth = today_data_dict.get('mkt_breadth', 0.5)
             cluster_map = build_sector_clusters(
                 self.panel, t, lookback_days=60, corr_threshold=0.55

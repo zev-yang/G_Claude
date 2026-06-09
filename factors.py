@@ -457,9 +457,49 @@ class AlphaLabV25_1:
                       + (" / moneyflow_panel unavailable" if moneyflow_panel is None else "")
                       + " — moneyflow not joined (48-factor baseline).")
 
+            # ── NEW: Layer-4 资金流 overlay 打分列 mf_score (线性叠加, 不喂 LGBM) ────────
+            # mf_score = w_s·z(mf_strength_8) + w_a·z(mf_accel) + w_r·retail_contrary。
+            # 三分量全 point-in-time; 阈值/权重全写死。mf_score 作为【独立打分列】保留 (不入
+            # self.factors), 在 backtest/run 里以 final = zscore(base) + MF_WEIGHT·mf_score 叠加。
+            # 无 moneyflow 覆盖 -> mf_strength_8 为 NaN -> mf_score NaN -> 叠加时按 0 (无 tilt)。
+            if CONFIG.get('USE_MONEYFLOW', False) and 'mf_strength_8' in df.columns:
+                # retail_contrary (需价): A 当日上涨, B 放量(>VOL_RATIO×20日均量),
+                # C 乖离 |close/ma20-1|<BIAS_LIMIT; 在满足 A&B&C 的票里取【小单净流出】当日横截面前 10%。
+                if (CONFIG.get('RETAIL_CONTRARY_ENABLE', True)
+                        and {'close', 'volume', 'pct_chg'}.issubset(df.columns)):
+                    _vr  = CONFIG.get('RETAIL_CONTRARY_VOL_RATIO', 1.2)
+                    _bl  = CONFIG.get('RETAIL_CONTRARY_BIAS_LIMIT', 0.15)
+                    _pcc = CONFIG.get('RETAIL_CONTRARY_PERCENTILE', 0.90)
+                    _ma20c = (df['close'].sort_index(level=['code', 'date']).groupby(level='code')
+                              .transform(lambda s: s.rolling(20, min_periods=10).mean()).reindex(df.index))
+                    _ma20v = (df['volume'].sort_index(level=['code', 'date']).groupby(level='code')
+                              .transform(lambda s: s.rolling(20, min_periods=10).mean()).reindex(df.index))
+                    _A = df['pct_chg'] > 0
+                    _B = df['volume'] > (_vr * _ma20v)
+                    _C = (df['close'] / _ma20c - 1.0).abs() < _bl
+                    _cond = _A & _B & _C
+                    _tmp = df['sm_outflow_rate'].where(_cond)         # 仅在 A&B&C 票内排名
+                    _rk  = _tmp.groupby(level='date').rank(pct=True)
+                    df['retail_contrary'] = ((_rk > _pcc) & _cond).astype('float32')
+                else:
+                    df['retail_contrary'] = np.float32(0.0)
+                # 当日横截面 z-score (clip ±3); NaN(未覆盖) 保留
+                def _csz(_col):
+                    _g = df.groupby('date')[_col]
+                    return ((df[_col] - _g.transform('mean')) / (_g.transform('std') + 1e-9)).clip(-3, 3)
+                _ws = CONFIG.get('MF_W_STRENGTH', 0.6)
+                _wa = CONFIG.get('MF_W_ACCEL', 0.2)
+                _wr = CONFIG.get('MF_W_RETAIL', 0.2)
+                df['mf_score'] = (_ws * _csz('mf_strength_8')
+                                  + _wa * _csz('mf_accel')
+                                  + _wr * df['retail_contrary']).astype('float32')
+                print(f"   ...mf_score built (overlay w={_ws}/{_wa}/{_wr}); "
+                      f"coverage {int(df['mf_score'].notna().sum()):,} rows")
+
             # ── Cleanup ──────────────────────────────────────────────
             for tmp_col in ['amplitude', 'pct_chg', 'illiq',
-                            'is_limit_down', 'is_big_cap']:
+                            'is_limit_down', 'is_big_cap',
+                            'mf_strength_8', 'mf_accel', 'sm_outflow_rate', 'retail_contrary']:
                 if tmp_col in df.columns: del df[tmp_col]
             gc.collect()
 
