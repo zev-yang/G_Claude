@@ -386,6 +386,19 @@ if __name__ == "__main__":
             
             print(f"\n🏆 Top Picks for Tomorrow ({len(today_df)} scanned):")
             print(f"Signal Date: {signal_date_str}") # 打印核对
+            # ── Layer-1 大盘仓位 (生产): 今日推荐敞口系数 ──────────────────────────────
+            if CONFIG.get('USE_MARKET_POSITION', False):
+                try:
+                    from market_position import market_position_series
+                    _mp, _, _rk = market_position_series(CONFIG['moneyflow_path'])
+                    _mp.index = _mp.index.normalize(); _rk.index = _rk.index.normalize()
+                    _pt = _mp.dropna()
+                    if len(_pt):
+                        _ld = _pt.index.max()
+                        print(f"🎯 [Layer-1 大盘仓位] 信号日 {_ld.date()}: 推荐敞口 = {float(_pt.loc[_ld])} "
+                              f"(rank={float(_rk.loc[_ld]):.2f}; 0=空仓 / 0.5=半仓 / 1.0=满仓)")
+                except Exception as _e:
+                    print(f"   [Layer-1] 仓位信号计算失败: {_e!r}")
             print("-" * 140) # 延长分割线以适应更长的输出
             for c, r in best.iterrows():
                 # VolRatio 

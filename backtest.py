@@ -383,6 +383,19 @@ class DailyAuditor:
             # F. 收益记录
             if not top['ret_pnl'].isnull().any():
                 r_strat = top['ret_pnl'].mean() - 2 * CONFIG['cost_bps']
+                # ── Layer-1 大盘仓位: 用资金流仓位系数缩放本窗口敞口 ──────────────────────
+                # 0=空仓(避开惨淡时段), 0.5=半仓, 1.0=满仓。point-in-time、阈值写死、不在回测上调参。
+                if CONFIG.get('USE_MARKET_POSITION', False):
+                    if not hasattr(self, '_mkt_pos'):
+                        from market_position import market_position_series
+                        _mp, _, _ = market_position_series(CONFIG['moneyflow_path'])
+                        _mp.index = _mp.index.normalize()
+                        self._mkt_pos = _mp
+                        tqdm.write(f"🎯 [Layer-1] market-position loaded "
+                                   f"({int(self._mkt_pos.notna().sum())} days with signal)")
+                    _p = self._mkt_pos.get(pd.Timestamp(t).normalize(), 1.0)
+                    _p = float(_p) if pd.notna(_p) else 1.0
+                    r_strat = _p * r_strat                      # 空仓窗口 Strat=0 (现金)
                 r_bench = valid['ret_pnl'].mean()
                 logs.append({'date': t, 'Strat': r_strat, 'Bench': r_bench})
             
@@ -418,3 +431,17 @@ class DailyAuditor:
         print(f"Strat CAGR  : {ann:.2%}")
         print(f"Sharpe Ratio: {sh:.2f}")
         print(f"Max Drawdown: {dd:.2%}")
+
+        # ── Layer-1 观察: 调仓日仓位分布 + 重点看 2026-03 是否被识别 (纯观察, 不调参) ──
+        if CONFIG.get('USE_MARKET_POSITION', False) and hasattr(self, '_mkt_pos'):
+            _bt = self._mkt_pos.reindex(df.index.normalize()).dropna()
+            if len(_bt):
+                _vc = _bt.value_counts().sort_index()
+                print("🎯 [Layer-1 大盘仓位] 调仓日仓位分布: "
+                      + ", ".join(f"{float(k)}→{int(v)}期" for k, v in _vc.items()))
+                _mar = _bt[(_bt.index >= '2026-03-01') & (_bt.index <= '2026-03-31')]
+                if len(_mar):
+                    print(f"   2026-03 调仓日仓位: {[float(x) for x in _mar.tolist()]} "
+                          f"(0=空仓避开 / 0.5=半仓 / 1.0=满仓)")
+                else:
+                    print("   (2026-03 无调仓日落在回测窗口内)")
