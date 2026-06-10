@@ -38,7 +38,7 @@ CONFIG = {
     "RETAIL_CONTRARY_VOL_RATIO": 1.2,    # 写死: 放量倍数 (当日量 / 20日均量)
     "RETAIL_CONTRARY_BIAS_LIMIT": 0.15,  # 写死: |close/ma20 - 1| 上限 (乖离约束)
     # ── DEFERRED (数据/择时未就绪, 留 False 以备后用) ───────────────────────────────
-    "USE_MARKET_POSITION": True,  # Layer-1 大盘仓位 (需 moneyflow_dc; 归到"晚点升 V9")
+    "USE_MARKET_POSITION": False,  # Layer-1 大盘仓位 (需 moneyflow_dc; 归到"晚点升 V9")
     "MF_INDUSTRY_ENABLE": False,   # Layer-2 行业加分 (需 moneyflow_ind_dc + 个股→行业映射)
     "MF_CONCEPT_ENABLE": False,    # Layer-3 概念加分 (默认关)
     "results_dir": "./results_v25_1_production",
@@ -60,13 +60,15 @@ CONFIG = {
     "max_history_days": 1000,    # was effectively 400 (train_window+100); raise for a real backtest
     "enable_hedge": False,       # OFF permanently — hedge is value-destroying (CAGR ~5%, worse DD).
                                  # diagnostics force-flips per combo; run.py uses this default.
-    "enable_logic_fusion": True, # False -> pure LGBM ranking (no LogicMatrix tilt)
+    "enable_logic_fusion": False, # False -> pure LGBM ranking (no LogicMatrix tilt)
     "logic_tilt": 0.3,           # weight of the logic signal in the z-blend
     "embargo": 0,                # extra purge days beyond horizon (0 = match production exactly)
     # ============ ACCURACY EXPERIMENT TOGGLES (compare each on/off) ============
     "residualize_label": True,   # target = rank of size-decile-residual fwd return (alpha), not raw
     "use_regime_features": True, # append market-state features so the model can adapt by regime
     "use_ranker": True,          # LGBMRanker (lambdarank, date=group) instead of LGBMRegressor
+    "USE_FUNDAMENTALS": True,          # 建议③: 5 基本面因子进 LGBM 候选池
+    "fundamentals_path": "./tushare_cache/_partial/daily_basic",
 }
 
 # Market-state context features appended to the model's input (NOT ranked factors).
@@ -93,6 +95,9 @@ class Timer:
 # (the two GROUPS_V3 copies were verified identical as sets).
 FAMILY_MAP = {
     # Stability
+    'size_lnmv': 'SizeFam',
+    'val_pe_ttm': 'ValFam', 'val_pb': 'ValFam', 'val_dv_ttm': 'ValFam',
+    'to_rate_f': 'TurnLvlFam',
     'turnover_cv':   'StabFam', 'turnover_cv10': 'StabFam',
     'turnover_cv5':  'StabFam', 'vol_stability': 'StabFam',
     # Raw momentum
@@ -153,6 +158,7 @@ GROUPS_V3 = {
         'mf_cum20',       # 主力 net inflow, 20d cumulative (Tushare moneyflow)
         'mf_trend',       # 主力 inflow acceleration (recent vs longer pace)
         'elg_cum20',      # 超大单 net inflow, 20d cumulative
+        'to_rate_f',
     ],
     'Reversion': [
         'reversal', 'rsi', 'smart_proxy', 'pv_divergence',
@@ -165,5 +171,6 @@ GROUPS_V3 = {
         'skew_10', 'skew_20', 'amp_ma_5', 'amp_ma_10', 'amp_ma_20',
         'atr_ratio','skew_5',
         'coil',        # range compression (蓄势 / coiling)
+        'size_lnmv', 'val_pe_ttm', 'val_pb', 'val_dv_ttm',
     ],
 }

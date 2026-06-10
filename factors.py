@@ -457,6 +457,39 @@ class AlphaLabV25_1:
                       + (" / moneyflow_panel unavailable" if moneyflow_panel is None else "")
                       + " — moneyflow not joined (48-factor baseline).")
 
+            # ── NEW (建议③): 基本面/估值 factors (Tushare daily_basic) ──────────────
+            # 48 因子池纯价量, 模型从没见过市值/估值。这里把 daily_basic 的 5 个同日因子
+            # 走【标准通道】接入: join -> rank(pct) -> ICIR 结构化选择 -> LGBM。
+            # ★ 无手工权重/阈值 — 用不用、何时用, 由每窗口的模型自己决定 (Factor Audit 可见)。
+            # ★ 必须排除在全局 dropna 之外 (见下) — 亏损股 pe_ttm 为 NaN, 不能因此掉出 universe。
+            fund_added = []
+            if CONFIG.get('USE_FUNDAMENTALS', False):
+                try:
+                    from fundamental_factors import fundamentals_panel, FUND_FACTORS
+                    _fund = fundamentals_panel(
+                        CONFIG.get('fundamentals_path', './tushare_cache/_partial/daily_basic'))
+                    _pan_dt = df.index.get_level_values('date').dtype
+                    if _fund.index.get_level_values('date').dtype != _pan_dt:
+                        _fund.index = _fund.index.set_levels(
+                            _fund.index.levels[0].astype(_pan_dt), level='date')
+                    df = df.join(_fund)                     # left join — keeps all price rows
+                    _fcols = [c for c in FUND_FACTORS if c in df.columns]
+                    _fcov = df['size_lnmv'].notna().mean() if 'size_lnmv' in df.columns else 0.0
+                    if _fcov >= 0.30:
+                        self.factors += _fcols             # ranked later by the standard loop
+                        fund_added = _fcols
+                        print(f"   ...daily_basic joined as MODEL FACTORS: {_fcols} "
+                              f"(coverage {_fcov:.0%})")
+                    else:                                  # data missing/stale — don't half-join
+                        df = df.drop(columns=_fcols)
+                        print(f"   ...⚠️  daily_basic coverage only {_fcov:.0%} (<30%) — factors "
+                              f"NOT added; run run_data_update.py to fetch daily_basic.")
+                    del _fund
+                    gc.collect()
+                except Exception as _e:
+                    print(f"   ...⚠️  daily_basic SKIPPED at join "
+                          f"({type(_e).__name__}: {_e}) — pipeline continues without it.")
+
             # ── NEW: Layer-4 资金流 overlay 打分列 mf_score (线性叠加, 不喂 LGBM) ────────
             # mf_score = w_s·z(mf_strength_8) + w_a·z(mf_accel) + w_r·retail_contrary。
             # 三分量全 point-in-time; 阈值/权重全写死。mf_score 作为【独立打分列】保留 (不入
@@ -496,10 +529,31 @@ class AlphaLabV25_1:
                 print(f"   ...mf_score built (overlay w={_ws}/{_wa}/{_wr}); "
                       f"coverage {int(df['mf_score'].notna().sum()):,} rows")
 
+            # ── NEW (Stage-1 观察): IRCF 情境因子 ircf_score ───────────────────────────
+            # 上涨日看机构大单净买入强度的横截面分位; 下跌日看小单卖出占比的横截面分位; 否则 0。
+            # ★ 仅构建打分列 + 在 check_ic 里看它【自身 IC】(暂不接入选股, 先验证有没有 edge)。
+            # 全 point-in-time, 阈值写死。无 moneyflow 覆盖 -> NaN (不污染 IC)。
+            if CONFIG.get('USE_IRCF', False) and {'big_buy_strength', 'small_sell_ratio', 'pct_chg'}.issubset(df.columns):
+                _up_hi = CONFIG.get('IRCF_MAX_RETURN_UP', 0.07)     # 上涨日剔涨停
+                _dn_lo = CONFIG.get('IRCF_MIN_RETURN_DOWN', -0.05)  # 下跌日剔跌停
+                _up   = (df['pct_chg'] > 0) & (df['pct_chg'] < _up_hi)
+                _down = (df['pct_chg'] < 0) & (df['pct_chg'] > _dn_lo)
+                _inst  = df['big_buy_strength'].where(_up).groupby(level='date').rank(pct=True)
+                _panic = df['small_sell_ratio'].where(_down).groupby(level='date').rank(pct=True)
+                _ircf = pd.Series(np.nan, index=df.index, dtype='float64')
+                _ircf[_up]   = _inst[_up]              # 上涨日机构吸筹分位 (NaN where uncovered)
+                _ircf[_down] = _panic[_down]           # 下跌日散户恐慌分位
+                _covered = df['big_buy_strength'].notna()
+                _ircf[_covered & ~_up & ~_down] = 0.0  # 有覆盖但既非涨日也非跌日 -> 0
+                df['ircf_score'] = _ircf.astype('float32')
+                print(f"   ...ircf_score built (Stage-1 观察; up<{_up_hi}, down>{_dn_lo}); "
+                      f"coverage {int(df['ircf_score'].notna().sum()):,} rows")
+
             # ── Cleanup ──────────────────────────────────────────────
             for tmp_col in ['amplitude', 'pct_chg', 'illiq',
                             'is_limit_down', 'is_big_cap',
-                            'mf_strength_8', 'mf_accel', 'sm_outflow_rate', 'retail_contrary']:
+                            'mf_strength_8', 'mf_accel', 'sm_outflow_rate', 'retail_contrary',
+                            'big_buy_strength', 'small_sell_ratio']:
                 if tmp_col in df.columns: del df[tmp_col]
             gc.collect()
 
@@ -540,7 +594,8 @@ class AlphaLabV25_1:
             # moneyflow factors are intentionally excluded from this dropna (see the join
             # block above): keep price rows that lack moneyflow coverage rather than dropping
             # the whole row. Their mf_* values stay NaN (clean IC + native LGBM handling).
-            _core_feats = [f for f in self.factors if f not in mf_added]
+            # fund_added likewise — 亏损股 pe_ttm=NaN 绝不能因 dropna 掉出 universe。
+            _core_feats = [f for f in self.factors if f not in mf_added and f not in fund_added]
             df = df.dropna(subset=['adv'] + _core_feats)
 
         print(f"  > Total Samples (Inc. Prediction): {len(df):,}")
