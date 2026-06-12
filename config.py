@@ -67,8 +67,10 @@ CONFIG = {
     "residualize_label": True,   # target = rank of size-decile-residual fwd return (alpha), not raw
     "use_regime_features": True, # append market-state features so the model can adapt by regime
     "use_ranker": True,          # LGBMRanker (lambdarank, date=group) instead of LGBMRegressor
-    "USE_FUNDAMENTALS": True,          # 建议③: 5 基本面因子进 LGBM 候选池
+    "USE_FUNDAMENTALS": False,          # 建议③: 5 基本面因子进 LGBM 候选池 2026/06/10证明无效
     "fundamentals_path": "./tushare_cache/_partial/daily_basic",
+    "USE_BAGGING": False, #2026/06/11证明无效
+    "BAG_SEEDS": [42, 202, 777],
 }
 
 # Market-state context features appended to the model's input (NOT ranked factors).
@@ -99,12 +101,11 @@ FAMILY_MAP = {
     'val_pe_ttm': 'ValFam', 'val_pb': 'ValFam', 'val_dv_ttm': 'ValFam',
     'to_rate_f': 'TurnLvlFam',
     'turnover_cv':   'StabFam', 'turnover_cv10': 'StabFam',
-    'turnover_cv5':  'StabFam', 'vol_stability': 'StabFam',
+    'turnover_cv5':  'StabFam',
     # Raw momentum
     'ret_10': 'MomFam', 'ret_20': 'MomFam', 'mom_acc': 'MomFam',
-    'mom_10': 'MomFam', 'near_high': 'MomFam', 'dist_high': 'MomFam',
+    'dist_high': 'MomFam',
     # Alpha momentum (separate family — different signal source)
-    'alpha_mom10': 'AlphaMomFam',
     # Sector relative strength
     'sector_rs_5': 'SecRSFam', 'sector_rs_10': 'SecRSFam',
     # Gap [NEW]
@@ -114,7 +115,7 @@ FAMILY_MAP = {
     # Volatility std
     'vol_5': 'StdFam', 'vol_10': 'StdFam', 'vol_20': 'StdFam',
     # Amplitude
-    'amp_ma_5': 'AmpFam', 'amp_ma_10': 'AmpFam', 'amp_ma_20': 'AmpFam',
+    'amp_ma_5': 'AmpFam',
     # Skew
     'skew_5': 'SkewFam', 'skew_10': 'SkewFam', 'skew_20': 'SkewFam',
     # Intraday (smoothed only)
@@ -140,16 +141,16 @@ FAMILY_MAP = {
 
 GROUPS_V3 = {
     'Momentum': [
-        'near_high', 'mom_10', 'mom_acc', 'ret_10', 'ret_20',
+        'mom_acc', 'ret_10', 'ret_20',
         'bias_20', 'dist_high', 'macd_hist', 'bb_position',
-        'alpha_mom10', 'sector_rs_5', 'sector_rs_10',
+        'sector_rs_5', 'sector_rs_10',
         'gap',          # opening gap belongs with momentum
         'gap_ma3',
     ],
     'Volume': [
         'vol_z', 'buy_force', 'vol_ratio', 'vol_ratio5', 'vol_ratio10',
         'turnover_cv', 'turnover_cv10', 'turnover_cv5',
-        'illiq_ma10', 'vol_stability',
+        'illiq_ma10',
         'open_strength_ma5',  # smoothed intraday pressure
         'vpt',                # directional volume-price trend
         'sector_heat',    # sector-level volume × trend activity
@@ -168,7 +169,7 @@ GROUPS_V3 = {
     ],
     'Stability': [
         'pv_corr', 'vol_10', 'vol_20', 'vol_5',
-        'skew_10', 'skew_20', 'amp_ma_5', 'amp_ma_10', 'amp_ma_20',
+        'skew_10', 'skew_20', 'amp_ma_5',
         'atr_ratio','skew_5',
         'coil',        # range compression (蓄势 / coiling)
         'size_lnmv', 'val_pe_ttm', 'val_pb', 'val_dv_ttm',

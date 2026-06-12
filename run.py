@@ -17,7 +17,36 @@ from safety import check_market_safety_v9
 from logic_matrix import LogicMatrixPredictorV5, IntegratedAuditorV5
 from portfolio import build_sector_clusters, diversify_picks, moneyflow_negative_screen
 from backtest import DailyAuditor
-from modeling import build_model, fit_model
+from modeling import build_model, build_models, fit_model, predict_ensemble
+
+
+class _Tee:
+    """Mirror everything written to stdout into a log file (terminal output unchanged).
+
+    print() and tqdm.write() both go through sys.stdout -> captured. The tqdm progress
+    BAR itself writes to stderr -> terminal only, so the log stays clean (no \\r spam).
+    Flushes on every write — a crashed/interrupted run still keeps everything printed
+    so far. Log file is UTF-8 (emojis safe regardless of Windows console codepage).
+    """
+    def __init__(self, stream, log_path):
+        self._stream = stream
+        self._log = open(log_path, 'a', encoding='utf-8', errors='replace')
+    def write(self, data):
+        self._stream.write(data)
+        try:
+            self._log.write(data)
+            self._log.flush()
+        except Exception:
+            pass
+        return len(data)
+    def flush(self):
+        self._stream.flush()
+        try:
+            self._log.flush()
+        except Exception:
+            pass
+    def __getattr__(self, name):          # delegate isatty/encoding/etc. to the real stream
+        return getattr(self._stream, name)
 
 
 def deep_clean_memory():
@@ -63,6 +92,14 @@ def deep_clean_memory():
 
 
 if __name__ == "__main__":
+    # ── 全程日志落盘: 终端照常显示, 同时完整写入带时间戳的 txt (含 59 窗口明细/Audit/Step5) ──
+    from datetime import datetime as _dt
+    _log_dir = CONFIG.get('results_dir', '.')
+    os.makedirs(_log_dir, exist_ok=True)
+    _log_path = os.path.join(_log_dir, f"run_log_{_dt.now().strftime('%Y%m%d_%H%M%S')}.txt")
+    sys.stdout = _Tee(sys.stdout, _log_path)
+    print(f"📝 [Run Log] 本次完整输出同步保存至: {os.path.abspath(_log_path)}")
+
     print(f"🚀 v25.1 Live Unlock | Forecast Fixed\n")
         # FAMILY_MAP is imported from config.
     try:
@@ -76,7 +113,7 @@ if __name__ == "__main__":
         # 3. Audit
         auditor = DailyAuditor(panel, feats)
         auditor.check_ic()
-        res_df, model = auditor.run_simulation()
+        res_df, _sim_models = auditor.run_simulation()   # 返回的模型列表后续未使用
         auditor.analyze(res_df)
              
 # ... (Step 5 之后) ...
@@ -258,7 +295,8 @@ if __name__ == "__main__":
         print(f"\n  > Retraining Model with {len(final_selected_feats)} features...")
 # 🔮 [Step 6] 生产重训模型
         # UPGRADE: model from CONFIG['use_ranker'] (LGBMRanker vs LGBMRegressor).
-        model_final = build_model()
+        # 与回测同一套 seed-bagging 集成 (USE_BAGGING=False 时退化单模型)。
+        models_final = build_models()
         
         # 使用全量历史数据进行最后一次拟合
         # B. 全量重训 (Using Exponential Weighting)
@@ -269,8 +307,9 @@ if __name__ == "__main__":
         w_final = np.geomspace(0.1, 1.0, len(train_full)) 
         # UPGRADE: append regime features (market-state context) to the model input.
         prod_feats = final_selected_feats + (REGIME_FEATURES if CONFIG['use_regime_features'] else [])
-        fit_model(model_final, train_full[prod_feats], train_full['target'], w_final,
-                  train_full.index.get_level_values('date').values)
+        for _m in models_final:
+            fit_model(_m, train_full[prod_feats], train_full['target'], w_final,
+                      train_full.index.get_level_values('date').values)
 
         
         # E. 最终预测下一交易日
@@ -283,7 +322,7 @@ if __name__ == "__main__":
         
         if len(today_df) > 0:
             # === MODIFIED: 预测时使用 prod_feats (factors + regime features) ===
-            today_df['score'] = model_final.predict(today_df[prod_feats])
+            today_df['score'] = predict_ensemble(models_final, today_df[prod_feats])
             # ... (后续逻辑) ...
  # ==========================================================
  # === [MODIFIED: Production 实盘统一调用避险模块] ===
@@ -487,3 +526,4 @@ if __name__ == "__main__":
         traceback.print_exc()
         
     deep_clean_memory()
+    print(f"\n📝 [Run Log] 完整执行结果已保存: {os.path.abspath(_log_path)} — 可直接把这个 txt 发给 Claude 分析。")

@@ -129,8 +129,7 @@ class AlphaLabV25_1:
 
             prev_close     = g['close'].shift(1)
             amp_series     = (df['high'] - df['low']) / (prev_close + 1e-9)
-            df['amp_ma_10'] = amp_series.groupby('code').transform(lambda x: x.rolling(10).mean())
-            df['amp_ma_20'] = amp_series.groupby('code').transform(lambda x: x.rolling(20).mean())
+            # PRUNED: amp_ma_10 / amp_ma_20 — 0/59 selected in every Factor Audit (dead weight)
             df['amp_ma_5']  = amp_series.groupby('code').transform(lambda x: x.rolling(5).mean())
 
             clv = ((df['close'] - df['low']) - (df['high'] - df['close'])) / (
@@ -146,9 +145,8 @@ class AlphaLabV25_1:
             v_std5z          = g['volume'].transform(lambda x: x.rolling(5).std())
             df['vol_z5']     = ((df['volume'] - v_mean5z) / (v_std5z + 1e-9)).astype('float32')
 
-            df['near_high']  = (df['close'] / (
-                g['close'].transform(lambda x: x.rolling(20).max()) + 1e-9)).astype('float32')
-            df['mom_10']     = g['close'].pct_change(10).astype('float32')
+            # PRUNED: near_high — rank-duplicate of dist_high (close/max vs close/max−1, 横截面 rank 全等)
+            # PRUNED: mom_10 — literal duplicate of ret_10 (同一公式 close.pct_change(10))
             rolling_max      = g['close'].transform(lambda x: x.rolling(60).max())
             df['dist_high']  = ((df['close'] / (rolling_max + 1e-9)) - 1).astype('float32')
             df['vol_z']      = g['volume'].transform(
@@ -162,9 +160,8 @@ class AlphaLabV25_1:
             if 'up_vol' in df.columns: del df['up_vol']
 
             df['pv_divergence'] = df['ret_5'].rank(pct=True) - df['vol_ratio'].rank(pct=True)
-            vol_stb  = g['volume'].transform(lambda x: x.rolling(5).std())
-            vol_mnb  = g['volume'].transform(lambda x: x.rolling(5).mean())
-            df['vol_stability'] = vol_mnb / (vol_stb + 1e-9)
+            # PRUNED: vol_stability — turnover_cv5 的倒数 (mean/std vs std/mean, 同序列同窗口),
+            # rank 互为镜像 (IC 表里 ±0.020292 / ±0.327692 精确对称即铁证); 树模型不分方向, 留 turnover_cv5。
 
             # ── NEW: Intraday Strength (smoothed only — raw had near-zero ICIR) ─
             df['open_strength']     = (
@@ -195,9 +192,9 @@ class AlphaLabV25_1:
             df['bb_position'] = df['bb_position'].astype('float32')
             gc.collect()
 
-            # ── NEW: Alpha Momentum (beta-stripped) ──────────────────
-            mkt_ret10         = df.groupby('date')['ret_10'].transform('median')
-            df['alpha_mom10'] = (df['ret_10'] - mkt_ret10).astype('float32')
+            # PRUNED: alpha_mom10 — ret_10 减去当日中位数 (每日常数), 横截面 rank 与 ret_10 完全相同
+            # (IC 表 mom_10/ret_10/alpha_mom10 三者 IC/ICIR 六位小数全等即铁证); 且其独立 AlphaMomFam
+            # 让族内去重拦不住 — 同一信号占两个名额。
 
             # ── NEW: Sector Relative Strength ────────────────────────
             df['size_quintile'] = df.groupby('date')['adv'].transform(
@@ -372,7 +369,6 @@ class AlphaLabV25_1:
                 'mom_acc', 'ret_10', 'ret_20', 'dist_high', 'bias_20',
                 'macd_hist',          # talib MACD histogram (ICIR 0.154)
                 'bb_position',        # talib Bollinger Band position
-                'alpha_mom10',        # market-beta-stripped 10d return
                 'sector_rs_5',        # outperformance vs size peers 5d (ICIR 0.131)
                 'sector_rs_10',       # outperformance vs size peers 10d
                 'gap',           # [NEW] opening gap → 开盘%
@@ -396,9 +392,9 @@ class AlphaLabV25_1:
                 # ── Structure ───────────────────────────────────────────
                 'pv_corr', 'smart_proxy', 'illiq_ma10',
                 # ── Amplitude ───────────────────────────────────────────
-                'amp_ma_5', 'amp_ma_10', 'amp_ma_20',
+                'amp_ma_5',
                 # ── Market / Other ──────────────────────────────────────
-                'vol_z', 'mom_10', 'near_high', 'pv_divergence', 'vol_stability',
+                'vol_z', 'pv_divergence',
                 # ── Accumulation / Distribution (主力 footprints) ────────
                 'downside_rs',   # holds up on down-market days (support / 抗跌)
                 'accum_trend',   # 20d up-volume share, rising = accumulation

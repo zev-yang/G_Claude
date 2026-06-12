@@ -71,6 +71,15 @@ def daily_update():
         cleared = _clear_recent_empty(out_dir, recent)
         if cleared:
             print(f"  [{label}] cleared {cleared} recent .empty marker(s) -> retry next run")
+
+    # ── A股日线增量 (Tushare daily, doc_id=27) -> 直接续写 TDX 数据湖 stock_data_all/*.csv ──
+    # 失败不影响上面的资金流更新 (独立 try); 空湖/未到发布时间会自动 SKIP/续传。
+    try:
+        import fetch_daily_tushare
+        fetch_daily_tushare.update_daily_lake(pro)
+    except Exception as e:
+        print(f"  [daily->lake] update FAILED: {e!r} (资金流已更新; 修复后重跑即可)")
+
     print("✅ daily_update done. Increments pulled into tushare_cache/_partial/.")
 
 

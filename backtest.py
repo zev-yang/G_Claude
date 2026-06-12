@@ -6,7 +6,7 @@ import pandas as pd
 from tqdm import tqdm
 
 from config import CONFIG, FAMILY_MAP, GROUPS_V3, RED, GREEN, RESET, _zscore, REGIME_FEATURES
-from modeling import build_model, fit_model
+from modeling import build_model, build_models, fit_model, predict_ensemble
 from safety import check_market_safety_v9
 from logic_matrix import LogicMatrixPredictorV5
 from portfolio import build_sector_clusters, diversify_picks, moneyflow_negative_screen
@@ -65,6 +65,23 @@ class DailyAuditor:
                       f"| 分层多空(Top20%-Bot20%)={np.nanmean(_msp):.4f} "
                       f"(IC/spread≈0 → overlay 无增量, 考虑 USE_MONEYFLOW=False)")
 
+        # ── IRCF Stage-1 观察: ircf_score 自身 IC + 分层多空 (纯展示, 不接入选股/不调参) ──
+        if 'ircf_score' in valid_y.columns:
+            _iic, _isp = [], []
+            for _d, _g in valid_y.groupby(level='date'):
+                _gg = _g.dropna(subset=['ircf_score', 'target'])
+                if len(_gg) < 10 or _gg['ircf_score'].nunique() < 3:
+                    continue
+                _iic.append(_gg['ircf_score'].corr(_gg['target'], method='spearman'))
+                _q = _gg['ircf_score'].rank(pct=True)
+                _isp.append(_gg.loc[_q > 0.8, 'target'].mean() - _gg.loc[_q < 0.2, 'target'].mean())
+            if _iic:
+                _iic = np.array(_iic, dtype=float); _isp = np.array(_isp, dtype=float)
+                print(f"🧭 [IRCF ircf_score] 自身 IC={np.nanmean(_iic):.4f} "
+                      f"ICIR={np.nanmean(_iic) / (np.nanstd(_iic) + 1e-9):.2f} "
+                      f"| 分层多空(Top20%-Bot20%)={np.nanmean(_isp):.4f} "
+                      f"(≈0 或负 → 信号没/反向 edge, 别再往上建 overlay/筛选/动态持有)")
+
     def run_simulation(self):
         # 1. 确定回测时间范围
         start_date = pd.Timestamp(CONFIG['audit_start'])
@@ -82,7 +99,10 @@ class DailyAuditor:
         print(f"\n🏃 [Step 4] Simulation Start (Elite Structural Selection)...")
         
         # UPGRADE: model is built from CONFIG['use_ranker'] (LGBMRanker vs LGBMRegressor).
-        model = build_model()
+        # USE_BAGGING=True 时为 seed-bagging 集成 (同超参不同 seed); False 时单模型, 行为不变。
+        models = build_models()
+        if len(models) > 1:
+            print(f"🎲 [Seed Bagging] {len(models)} members, seeds={CONFIG.get('BAG_SEEDS')}")
         
         idx = pd.IndexSlice
         logs = []
@@ -237,15 +257,17 @@ class DailyAuditor:
             w = np.geomspace(0.1, 1.0, len(tr_data))
             # UPGRADE: append regime features (market-state context) to the model input.
             model_feats = final_active_feats + (REGIME_FEATURES if CONFIG['use_regime_features'] else [])
-            fit_model(model, tr_data[model_feats], tr_data['target'], w,
-                      tr_data.index.get_level_values('date').values)
+            for _m in models:
+                fit_model(_m, tr_data[model_feats], tr_data['target'], w,
+                          tr_data.index.get_level_values('date').values)
 
             # ── Factor audit: tally selection + this window's LGBM gain (observational) ──
             _n_fit_windows += 1
             for _f in final_active_feats:
                 _sel_count[_f] += 1
             try:
-                _gains = model.booster_.feature_importance(importance_type='gain')
+                _gains = np.mean([_m.booster_.feature_importance(importance_type='gain')
+                                  for _m in models], axis=0)        # 集成: 取成员均值
                 for _f, _g in zip(model_feats, _gains):
                     _imp_accum.setdefault(_f, []).append(float(_g))
             except Exception:
@@ -321,7 +343,7 @@ class DailyAuditor:
             # model by magnitude. Now both signals are z-scored and blended; logic only TILTS
             # the ML rank, weighted by CONFIG['logic_tilt']. fused_score becomes a z (ranking
             # is scale-invariant, so downstream selection is unaffected).
-            lgbm_scores = model.predict(valid[model_feats])
+            lgbm_scores = predict_ensemble(models, valid[model_feats])
             if CONFIG['enable_logic_fusion']:
                 logic_engine = LogicMatrixPredictorV5()
                 logic_scores = np.array([
@@ -417,7 +439,7 @@ class DailyAuditor:
             _tag = '  <== MoneyFlow' if f in _MF else ''
             print(f"  {f:<18}{_sel:>5}/{_n_fit_windows:<3}{_pct:>5.0f}%{_mg:>11.1f}{_tag}")
 
-        return pd.DataFrame(logs).set_index('date'), model
+        return pd.DataFrame(logs).set_index('date'), models   # bagging: 返回成员列表
 
     def analyze(self, df):
         if df.empty: return
