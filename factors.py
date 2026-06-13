@@ -26,7 +26,7 @@ class AlphaLabV25_1:
         print("\n📋 [2] Feature Engineering V3 (Regime-Conditional Beta)...")
 
         panel = panel[~panel['name'].str.contains(r'ST|\*ST|退', na=False)]
-        panel = panel[panel['close'] > 4.0]
+        panel = panel[panel['close_raw'] > 4.0]   # 复权迁移: 绝对价过滤用原始价
 
         with Timer("Calc Factors"):
             df = panel.copy()
@@ -49,6 +49,7 @@ class AlphaLabV25_1:
             open_exit      = g['open'].shift(-(1 + h))
             df['open_entry'] = open_entry
             df['open_exit']  = open_exit
+            df['open_entry_raw'] = g['open_raw'].shift(-1)   # 报告/下单显示用真实价格
             df['ret_pnl']    = (open_exit / open_entry) - 1.0
 
             log_ret            = np.log(open_exit) - np.log(open_entry)
@@ -111,7 +112,7 @@ class AlphaLabV25_1:
             gc.collect()
 
             vwap               = df['amount'] / (df['volume'] + 1e-9)
-            df['smart_proxy']  = df['close'] / vwap
+            df['smart_proxy']  = df['close_raw'] / vwap   # 复权迁移: 原始价/原始VWAP, 语义不变
 
             v_std20  = g['volume'].transform(lambda x: x.rolling(20).std())
             v_mean20 = g['volume'].transform(lambda x: x.rolling(20).mean())
@@ -545,6 +546,64 @@ class AlphaLabV25_1:
                 print(f"   ...ircf_score built (Stage-1 观察; up<{_up_hi}, down>{_dn_lo}); "
                       f"coverage {int(df['ircf_score'].notna().sum()):,} rows")
 
+            # ── 因子实验室 (observe-only): 新候选先量自身 IC, 不进选拔池/不进 LGBM ──────
+            # ★ 上轮已证明: 动候选池会级联换队 (±5pp)。所以新因子必须先过这道零接触闸:
+            #   列名以 lab_ 开头 -> 不在 self.factors -> 不参与 rank/选拔/dropna, 仅 check_ic 观察。
+            #   窗口参数按提案原文写死 (20日相关/10日和), 不调。
+            if CONFIG.get('USE_FACTOR_LAB', False):
+                # lab_smart_intraday: 隔夜收益 vs 日内收益 的 20 日滚动相关 (机构/散户行为分解)
+                _ov = (df['open'] / g['close'].shift(1) - 1.0)
+                _in = (df['close'] / df['open'].replace(0, np.nan) - 1.0)
+                _gc = lambda s, w, fn: s.groupby(s.index.get_level_values('code')).transform(
+                    lambda x: getattr(x.rolling(w), fn)())
+                _mxy = _gc(_ov * _in, 20, 'mean')
+                _mx, _my = _gc(_ov, 20, 'mean'), _gc(_in, 20, 'mean')
+                _sx, _sy = _gc(_ov, 20, 'std'),  _gc(_in, 20, 'std')
+                df['lab_smart_intraday'] = ((_mxy - _mx * _my) /
+                                            (_sx * _sy + 1e-12)).clip(-1, 1).astype('float32')
+                # lab_upper_shadow: 上影线长度 × 量比, 10 日累计 (炸板/冲高回落微结构)
+                _shadow = ((df['high'] - np.maximum(df['open'], df['close']))
+                           / df['close'].replace(0, np.nan))
+                df['lab_upper_shadow'] = _gc(_shadow * df['vol_ratio'], 10, 'sum').astype('float32')
+                del _ov, _in, _mxy, _mx, _my, _sx, _sy, _shadow
+
+                # ── 基本盘 (复权口径下复检): daily_basic 5 因子, 仅观察不进池 ──────────────
+                # 旧结论 (34.84% vs 40.90%) 是未复权数据上得出的; 数据口径已变, 用观察舱复检。
+                try:
+                    from fundamental_factors import fundamentals_panel, FUND_FACTORS
+                    _fp = fundamentals_panel(
+                        CONFIG.get('fundamentals_path', './tushare_cache/_partial/daily_basic'))
+                    _pdt = df.index.get_level_values('date').dtype
+                    if _fp.index.get_level_values('date').dtype != _pdt:
+                        _fp.index = _fp.index.set_levels(_fp.index.levels[0].astype(_pdt), level='date')
+                    for _f in FUND_FACTORS:
+                        if _f in _fp.columns:
+                            df['lab_' + _f] = _fp[_f].reindex(df.index).astype('float32')
+                    del _fp
+                except Exception as _e:
+                    print(f"   ...⚠️ 基本盘观察舱 SKIPPED ({type(_e).__name__}: {_e})")
+
+                # ── 外部提案幸存者 (复检): mf_accel 来自已算好的资金流扩展列 ──────────────
+                # 注: tail_squeeze/vp_exhaustion/price_volume_density/accumulation 等 4 个是
+                #     既有因子的数学恒等重复 (clv_ma5/pv_divergence/smart_proxy/buy_force),
+                #     hidden_accum/crowding 是已证伪信号/构造即snooping — 不再重测, 详见上轮审查。
+                try:
+                    from moneyflow_factors import moneyflow_panel as _mfp_fn
+                    _mfp = _mfp_fn(CONFIG.get('moneyflow_path',
+                                   './tushare_cache/_partial/moneyflow'))
+                    if _mfp is not None and 'mf_accel' in _mfp.columns:
+                        _pdt = df.index.get_level_values('date').dtype
+                        if _mfp.index.get_level_values('date').dtype != _pdt:
+                            _mfp.index = _mfp.index.set_levels(
+                                _mfp.index.levels[0].astype(_pdt), level='date')
+                        df['lab_mf_accel'] = _mfp['mf_accel'].reindex(df.index).astype('float32')
+                        del _mfp
+                except Exception as _e:
+                    print(f"   ...⚠️ mf_accel 观察舱 SKIPPED ({type(_e).__name__}: {_e})")
+
+                _labs = [c for c in df.columns if c.startswith('lab_')]
+                print(f"   ...Factor Lab built (observe-only, 零阵容影响): {_labs}")
+
             # ── Cleanup ──────────────────────────────────────────────
             for tmp_col in ['amplitude', 'pct_chg', 'illiq',
                             'is_limit_down', 'is_big_cap',
@@ -596,5 +655,5 @@ class AlphaLabV25_1:
 
         print(f"  > Total Samples (Inc. Prediction): {len(df):,}")
         df = df[df['adv']   > 30e6]
-        df = df[df['close'] > 4.0]
+        df = df[df['close_raw'] > 4.0]   # 复权迁移: 绝对价过滤用原始价
         return df, self.factors

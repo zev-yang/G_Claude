@@ -450,7 +450,7 @@ if __name__ == "__main__":
                 factor_vals = [f"{f}({r.get(f, 0.0):.3f})" for f in final_selected_feats]
                 factor_str = " | ".join(factor_vals)
                 
-                print(f"{c:<8} {n[:4]:<8} {r['close']:<8.2f} {r['score']:.4f}   {vr:.2f}  {r['market_vol_ratio']:.3f}  |  {factor_str}")
+                print(f"{c:<8} {n[:4]:<8} {r['close_raw']:<8.2f} {r['score']:.4f}   {vr:.2f}  {r['market_vol_ratio']:.3f}  |  {factor_str}")
             print("-" * 140)
             #audit最终结果
             engine = LogicMatrixPredictorV5()

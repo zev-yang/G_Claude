@@ -76,6 +76,44 @@ def load_universe_audit(path):
     panel.drop_duplicates(subset=['date', 'code'], inplace=True, keep='last')
     panel = panel.set_index(['date', 'code']).sort_index()
     print(f"  > Loaded: {len(panel):,} rows")
+    panel = attach_adjustment(panel)
+    return panel
+
+
+def attach_adjustment(panel, adj_glob='./tushare_cache/_partial/adj_factor/*.parquet'):
+    """后复权 (hfq) 迁移核心: O/H/L/C ×= adj_factor; 原始 open/close 保留为 *_raw。
+
+    设计要点:
+      · 同日比值类因子 (clv/振幅/上影线...) 在"全部 OHLC 同乘当日因子"下不变 — 自动安全;
+      · 跨日比值 (ret/动量/gap/target...) 自动修正 — 这是迁移的目的;
+      · 绝对价过滤 (close>4) 与价格显示必须用 *_raw — 在 factors/backtest/run 已对应修改;
+      · 无复权分片时优雅降级为原始价口径 (open_raw/close_raw=原值, 大声警告), 管道不断。
+    """
+    files = sorted(glob.glob(adj_glob))
+    panel['open_raw']  = panel['open'].astype('float32')
+    panel['close_raw'] = panel['close'].astype('float32')
+    if not files:
+        print("  ⚠️ [复权] 未找到 adj_factor 分片 -> 本次按【未复权】口径运行 "
+              "(先跑 run_data_update.py 拉取复权因子)")
+        return panel
+    adj = pd.concat([pd.read_parquet(f, engine='fastparquet') for f in files],
+                    ignore_index=True)
+    adj['code'] = adj['ts_code'].astype(str).str[:6]
+    adj['date'] = pd.to_datetime(adj['trade_date'].astype(str), format='%Y%m%d')
+    adj = (adj.drop_duplicates(['date', 'code'])
+              .set_index(['date', 'code'])['adj_factor'].astype('float32'))
+    panel = panel.join(adj.rename('adj_factor'))
+    n_miss0 = int(panel['adj_factor'].isna().sum())
+    panel['adj_factor'] = panel.groupby(level='code')['adj_factor'].ffill()
+    panel['adj_factor'] = panel.groupby(level='code')['adj_factor'].bfill()
+    n_fill1 = int(panel['adj_factor'].isna().sum())
+    panel['adj_factor'] = panel['adj_factor'].fillna(1.0)
+    for c in ['open', 'high', 'low', 'close']:
+        panel[c] = (panel[c] * panel['adj_factor']).astype('float32')
+    cov = 1 - n_miss0 / max(len(panel), 1)
+    print(f"  ✅ [复权] hfq 口径已启用 | 分片 {len(files)} 天 | 直接命中率 {cov:.1%}"
+          f" | ffill/bfill 补 {n_miss0 - n_fill1:,} 行 | 按 1.0 兜底 {n_fill1:,} 行")
+    panel.drop(columns=['adj_factor'], inplace=True)
     return panel
 # ==========================================================
 # [新增] 🚀 通用混合战术避险系统 (Universal Tactical Hedge)

@@ -65,7 +65,34 @@ class DailyAuditor:
                       f"| 分层多空(Top20%-Bot20%)={np.nanmean(_msp):.4f} "
                       f"(IC/spread≈0 → overlay 无增量, 考虑 USE_MONEYFLOW=False)")
 
-        # ── IRCF Stage-1 观察: ircf_score 自身 IC + 分层多空 (纯展示, 不接入选股/不调参) ──
+        # ── 因子实验室观察: lab_* 自身 IC/ICIR/分层 + 与现役因子的最大|corr| (正交性检验) ──
+        # 预注册闸门 (先于结果写死): |ICIR|>=0.25 且 max|corr|<0.60 才有资格进【一次性】批量 A/B;
+        # 且 A/B 采纳线 = CAGR +5pp 或 Sharpe +0.15 (必须高于已测得的 ±5pp 阵容敏感噪声带)。
+        _lab_cols = [c for c in valid_y.columns if c.startswith('lab_')]
+        if _lab_cols:
+            _recent = valid_y[valid_y.index.get_level_values('date').isin(
+                sorted(valid_y.index.get_level_values('date').unique())[-60:])]
+            for _lc in _lab_cols:
+                _ics, _sps = [], []
+                for _d, _g in valid_y.groupby(level='date'):
+                    _gg = _g.dropna(subset=[_lc, 'target'])
+                    if len(_gg) < 30 or _gg[_lc].nunique() < 5:
+                        continue
+                    _ics.append(_gg[_lc].corr(_gg['target'], method='spearman'))
+                    _q = _gg[_lc].rank(pct=True)
+                    _sps.append(_gg.loc[_q > 0.8, 'target'].mean() - _gg.loc[_q < 0.2, 'target'].mean())
+                if not _ics:
+                    continue
+                _ics, _sps = np.array(_ics, float), np.array(_sps, float)
+                _corrs = _recent[self.feats].corrwith(_recent[_lc], method='spearman').abs()
+                _icir = np.nanmean(_ics) / (np.nanstd(_ics) + 1e-9)
+                _pass = (abs(_icir) >= 0.25) and (_corrs.max() < 0.60)
+                print(f"🧪 [Factor Lab] {_lc}: IC={np.nanmean(_ics):+.4f} ICIR={_icir:+.2f} "
+                      f"| 多空(T20-B20)={np.nanmean(_sps):+.4f} "
+                      f"| 与现役最大|corr|={_corrs.max():.2f} ({_corrs.idxmax()}) "
+                      f"-> {'✅ 过闸, 可进一次性批量A/B' if _pass else '❌ 未过闸 (弃)'}")
+
+
         if 'ircf_score' in valid_y.columns:
             _iic, _isp = [], []
             for _d, _g in valid_y.groupby(level='date'):
@@ -279,7 +306,7 @@ class DailyAuditor:
             except: continue
             
             #valid = today[(today['adv'] > 5e6) & (today['close'] > 2)]
-            valid = today[(today['adv'] > 15e6) & (today['close'] > 3.0)]
+            valid = today[(today['adv'] > 15e6) & (today['close_raw'] > 3.0)]
             if len(valid) < 5: continue
             
             # UPGRADE Edit 4a: removed a redundant model.predict here; lgbm_scores is computed
@@ -396,7 +423,7 @@ class DailyAuditor:
                     ret_str = "N/A"
                 
                 line = (f"  #{i:2d} {code:<7} {stock_name:<4} Score:{row['pred_score']:.4f} "
-                        f"Price:{row['open_entry']:>6.2f} PnL:{ret_str:>8} "
+                        f"Price:{row['open_entry_raw']:>6.2f} PnL:{ret_str:>8} "
                         f"MktVol:{row.get('market_vol_ratio', 0):.2f}")
                 output_lines.append(line)
             

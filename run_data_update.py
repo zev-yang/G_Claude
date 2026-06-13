@@ -80,6 +80,13 @@ def daily_update():
     except Exception as e:
         print(f"  [daily->lake] update FAILED: {e!r} (资金流已更新; 修复后重跑即可)")
 
+    # ── 复权因子增量 (hfq 迁移的数据底座) ──
+    try:
+        import fetch_adj_factor
+        fetch_adj_factor.update_adj_factor(pro)
+    except Exception as e:
+        print(f"  [adj_factor] update FAILED: {e!r} (其余更新不受影响)")
+
     print("✅ daily_update done. Increments pulled into tushare_cache/_partial/.")
 
 
