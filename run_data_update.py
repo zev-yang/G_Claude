@@ -87,6 +87,14 @@ def daily_update():
     except Exception as e:
         print(f"  [adj_factor] update FAILED: {e!r} (其余更新不受影响)")
 
+    # ── 个股融资融券明细 (Tushare margin_detail, doc_id=59) -> 独立 parquet 分片 ──
+    # 真·新信息 (杠杆资金仓位); 失败不影响上面的更新 (独立 try)。observe-only 候选数据源。
+    try:
+        import fetch_margin_detail
+        fetch_margin_detail.update_margin_detail(pro)
+    except Exception as e:
+        print(f"  [margin_detail] update FAILED: {e!r} (其余已更新; 修复后重跑即可)")
+
     print("✅ daily_update done. Increments pulled into tushare_cache/_partial/.")
 
 

@@ -405,6 +405,45 @@ class AlphaLabV25_1:
             # NOTE: 'streak' removed (ICIR=0.074 — below noise floor)
             # NOTE: 'open_strength' (raw) removed (ICIR=0.010 — pure noise)
 
+            # ── A/B: 晋级 2 个过闸因子进选股池 (val_pb + marg_rzye_chg5), 预注册一次性测试 ──
+            # 这两个是观察舱里唯二真过闸的 (val_pb ICIR-0.27/corr0.51; marg_rzye_chg5
+            # ICIR-0.38/corr0.28, 真新信息·非OHLCV)。进池后会过标准截面rank + ICIR选拔,
+            # 会触发已实测的阵容级联, 所以结果是"两因子+级联"的合并效应。NaN(两融标的外/
+            # 亏损股)沿用既有的"排除出 dropna + LGBM 原生NaN"路径, 与 moneyflow 一致。
+            if CONFIG.get('AB_NEW_FACTORS', False):
+                _ab_added = []
+                try:
+                    from fundamental_factors import fundamentals_panel
+                    _fp = fundamentals_panel(CONFIG.get('fundamentals_path',
+                                             './tushare_cache/_partial/daily_basic'))
+                    _pdt = df.index.get_level_values('date').dtype
+                    if _fp.index.get_level_values('date').dtype != _pdt:
+                        _fp.index = _fp.index.set_levels(
+                            _fp.index.levels[0].astype(_pdt), level='date')
+                    if 'val_pb' in _fp.columns:
+                        df['val_pb'] = _fp['val_pb'].reindex(df.index).astype('float32')
+                        _ab_added.append('val_pb')
+                    del _fp
+                except Exception as _e:
+                    print(f"   ...⚠️ A/B val_pb SKIPPED ({type(_e).__name__}: {_e})")
+                try:
+                    from margin_factors import margin_panel as _mg_ab_fn
+                    _mgp = _mg_ab_fn(CONFIG.get('margin_detail_path',
+                                     './tushare_cache/_partial/margin_detail'))
+                    _pdt = df.index.get_level_values('date').dtype
+                    if _mgp.index.get_level_values('date').dtype != _pdt:
+                        _mgp.index = _mgp.index.set_levels(
+                            _mgp.index.levels[0].astype(_pdt), level='date')
+                    if 'marg_rzye_chg5' in _mgp.columns:
+                        df['marg_rzye_chg5'] = _mgp['marg_rzye_chg5'].reindex(df.index).astype('float32')
+                        _ab_added.append('marg_rzye_chg5')
+                    del _mgp
+                except Exception as _e:
+                    print(f"   ...⚠️ A/B marg_rzye_chg5 SKIPPED ({type(_e).__name__}: {_e})")
+                self.factors += _ab_added
+                if _ab_added:
+                    print(f"   ...🆕 [A/B] 晋级因子进选股池: {_ab_added}")
+
             # ── NEW: 主力 moneyflow factors (Tushare basic `moneyflow`) ─────────
             # Defined in moneyflow_factors.py and joined here on the (date, code)
             # MultiIndex. They are deliberately LEFT AS NaN where moneyflow is missing
@@ -600,6 +639,23 @@ class AlphaLabV25_1:
                         del _mfp
                 except Exception as _e:
                     print(f"   ...⚠️ mf_accel 观察舱 SKIPPED ({type(_e).__name__}: {_e})")
+
+                # ── 融资融券 (margin_detail, doc_id=59): 真·新信息 (杠杆资金仓位), 观察舱 ──
+                # 仅在两融标的上有值 (~1500-3500 只), 其余 NaN — check_ic 按日 dropna 自动处理。
+                try:
+                    from margin_factors import margin_panel as _mg_fn, MARGIN_FACTORS
+                    _mgp = _mg_fn(CONFIG.get('margin_detail_path',
+                                  './tushare_cache/_partial/margin_detail'))
+                    _pdt = df.index.get_level_values('date').dtype
+                    if _mgp.index.get_level_values('date').dtype != _pdt:
+                        _mgp.index = _mgp.index.set_levels(
+                            _mgp.index.levels[0].astype(_pdt), level='date')
+                    for _f in MARGIN_FACTORS:
+                        if _f in _mgp.columns:
+                            df['lab_' + _f] = _mgp[_f].reindex(df.index).astype('float32')
+                    del _mgp
+                except Exception as _e:
+                    print(f"   ...⚠️ 融资融券观察舱 SKIPPED ({type(_e).__name__}: {_e})")
 
                 _labs = [c for c in df.columns if c.startswith('lab_')]
                 print(f"   ...Factor Lab built (observe-only, 零阵容影响): {_labs}")

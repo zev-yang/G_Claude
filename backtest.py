@@ -446,7 +446,14 @@ class DailyAuditor:
                     _p = float(_p) if pd.notna(_p) else 1.0
                     r_strat = _p * r_strat                      # 空仓窗口 Strat=0 (现金)
                 r_bench = valid['ret_pnl'].mean()
-                logs.append({'date': t, 'Strat': r_strat, 'Bench': r_bench})
+                # top_k 敏感性(纯事后报告, 零额外模型运行): 取分数最高的 N 个的等权收益。
+                # 不是"选参菜单" — top_k 的最终选择须基于先验(分散度/容量/成本)+样本外稳定性。
+                _ranked = top.sort_values('fused_score', ascending=False)['ret_pnl']
+                _c = 2 * CONFIG['cost_bps']
+                logs.append({'date': t, 'Strat': r_strat, 'Bench': r_bench,
+                             '_k10': _ranked.head(10).mean() - _c,
+                             '_k20': _ranked.head(20).mean() - _c,
+                             '_k30': _ranked.head(30).mean() - _c})
             
         # ── Factor audit summary: selection frequency + mean LGBM gain across windows ──
         _MF = {'mf_cum20', 'mf_trend', 'elg_cum20'}
@@ -480,6 +487,38 @@ class DailyAuditor:
         print(f"Strat CAGR  : {ann:.2%}")
         print(f"Sharpe Ratio: {sh:.2f}")
         print(f"Max Drawdown: {dd:.2%}")
+
+        # ── top_k 敏感性 (事后报告, 非选参菜单): 前10/20/30 各自的样本内表现 ──────────────
+        _ann_f = 252 / CONFIG['horizon']
+        if {'_k10', '_k20', '_k30'} <= set(df.columns):
+            print("\n📐 [top_k 敏感性] (全样本; 仅供理解集中度权衡, 不可挑回测最高者当生产参数)")
+            print(f"  {'top_k':<8}{'CAGR':>9}{'Sharpe':>9}{'MaxDD':>9}")
+            for _k in ('_k10', '_k20', '_k30'):
+                _s = df[_k].dropna()
+                if len(_s) < 2:
+                    continue
+                _a = _s.mean() * _ann_f
+                _sh = _a / (_s.std() * np.sqrt(_ann_f) + 1e-9)
+                _eq = (1 + _s).cumprod()
+                _dd = (_eq / _eq.cummax() - 1).min()
+                print(f"  top{_k[2:]:<5}{_a:>8.1%}{_sh:>9.2f}{_dd:>9.1%}")
+            print("  注: 取前10名集中度更高→若选股有效则收益更高但波动更大; 选择须靠先验+样本外, 非此表。")
+
+        # ── 样本外 holdout 分割 (走向卓越的诚实检验): 前70% 开发期 vs 后30% 留出期 ──────────
+        # 模拟本身已是逐窗滚动重训(无前视); 这里再把窗口按时间切开, 看业绩在"没参与任何
+        # 设计决策的后段"是否还稳。后段若崩 = 过拟合警报; 后段若稳 = 真实性证据。
+        if len(df) >= 10:
+            _cut = int(len(df) * 0.70)
+            for _label, _seg in [("开发期 (前70%)", df.iloc[:_cut]),
+                                 ("留出期 (后30%, OOS)", df.iloc[_cut:])]:
+                _s = _seg['Strat']
+                _a = _s.mean() * _ann_f
+                _sh = _a / (_s.std() * np.sqrt(_ann_f) + 1e-9)
+                _eq = (1 + _s).cumprod()
+                _dd = (_eq / _eq.cummax() - 1).min()
+                print(f"  [{_label}] {_seg.index.min().date()}~{_seg.index.max().date()} "
+                      f"| CAGR {_a:.1%} | Sharpe {_sh:.2f} | MaxDD {_dd:.1%} | {len(_seg)}窗")
+            print("  注: 留出期(后30%)是更接近实盘的样本外读数; 若它远差于开发期, 说明因子/模型对历史过拟合。")
 
         # ── Layer-1 观察: 调仓日仓位分布 + 重点看 2026-03 是否被识别 (纯观察, 不调参) ──
         if CONFIG.get('USE_MARKET_POSITION', False) and hasattr(self, '_mkt_pos'):

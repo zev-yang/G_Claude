@@ -1,26 +1,46 @@
-"""
-run_test.py — quick single-combo diagnostic.
+import pandas as pd
+import tushare as ts
 
-Runs ONLY (hedge OFF, logic ON) — your best config — instead of all four
-combinations, so it finishes in roughly a quarter of the time. It loads the data
-lake and engineers features once (including the new accumulation/distribution
-factors and the residual-label / regime / ranker settings from config.py), then
-prints the decomposition table for that one combo.
+# Initialize Tushare
+ts.set_token('db04790b0214c9122022fbd224d720e9cfa1fdcccb74edd4216f6bca')
+pro = ts.pro_api()
 
-Run it from the folder that holds the other modules:
+def check_if_adjusted(csv_path, ts_code):
+    # 1. Load your local data
+    df = pd.read_csv(csv_path)
+    df['date'] = pd.to_datetime(df['date'])
+    df = df.sort_values('date')
+    
+    # 2. Get the first date and last date of your data
+    first_date = df['date'].iloc[0].strftime('%Y%m%d')
+    last_date = df['date'].iloc[-1].strftime('%Y%m%d')
+    
+    # 3. Fetch the adjustment factors from Tushare
+    adj_df = pro.adj_factor(ts_code=ts_code, start_date=first_date, end_date=last_date)
+    adj_df['trade_date'] = pd.to_datetime(adj_df['trade_date'])
+    adj_df = adj_df.sort_values('trade_date')
+    
+    # 4. Check if the adjustment factor changed
+    first_factor = adj_df['adj_factor'].iloc[0]
+    last_factor = adj_df['adj_factor'].iloc[-1]
+    
+    print(f"--- Verification for {ts_code} ---")
+    if first_factor == last_factor:
+        print("Stock had no splits/dividends in this period. Cannot determine just from price.")
+    else:
+        print(f"Dividends/Splits occurred! Adj Factor changed from {first_factor} to {last_factor}.")
+        
+        # Calculate what the Forward Adjusted (QFQ) Open price SHOULD be on day 1
+        raw_open_day1 = df['open'].iloc[0]
+        expected_qfq_open = raw_open_day1 * (first_factor / last_factor)
+        
+        print(f"Your CSV Day 1 Open: {raw_open_day1}")
+        print(f"Expected QFQ Open  : {expected_qfq_open:.2f}")
+        
+        if abs(raw_open_day1 - expected_qfq_open) < 0.05:
+            print("✅ Conclusion: Your data is ADJUSTED (前复权).")
+        else:
+            print("❌ Conclusion: Your data is UNADJUSTED (未复权).")
 
-    python run_test.py
-"""
-from config import CONFIG
-from diagnostics import run_diagnostics
-
-if __name__ == "__main__":
-    # OPTIONAL fast screen: uncomment the next line to use the regressor instead of
-    # the ranker (~3x faster) just to check whether the new factors move things,
-    # then re-comment it for the real number.
-    # CONFIG["use_ranker"] = False
-
-    # Both hedge-OFF combos (the hedge is dead, so we skip it):
-    #   (False, False) = pure model  -> the CLEAN read on whether the new factors help
-    #   (False, True)  = + logic tilt -> confirms the overlay still helps with them
-    run_diagnostics(combos=[(False, False), (False, True)])
+# Run it on your file
+check_if_adjusted(r'.\stock_data_all\688600.csv', '688600.SH')
