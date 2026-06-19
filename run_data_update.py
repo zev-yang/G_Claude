@@ -95,13 +95,13 @@ def daily_update():
     except Exception as e:
         print(f"  [margin_detail] update FAILED: {e!r} (其余已更新; 修复后重跑即可)")
 
-    # ── 个股申万一级行业分类 (Tushare stock_basic.industry) -> 单文件 ──
-    # 潜伏模式 Layer5 行业中性化用; 一次性, 秒级。失败不影响其余更新。
+    # ── 三张财报表 (资产负债表/利润表/现金流量表) -> 潜伏 基本面因子的数据底座 ──
+    # 季度数据, 按报告期增量; 自动重拉最近 2 期纳入晚披露公司。失败不影响上面的更新 (独立 try)。
     try:
-        import fetch_industry
-        fetch_industry.update_industry(pro)
+        import fetch_financials_tushare
+        fetch_financials_tushare.update_financials(pro)
     except Exception as e:
-        print(f"  [industry] update FAILED: {e!r} (其余已更新)")
+        print(f"  [financials] update FAILED: {e!r} (其余已更新; 修复后重跑即可)")
 
     print("✅ daily_update done. Increments pulled into tushare_cache/_partial/.")
 
