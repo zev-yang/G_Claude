@@ -51,7 +51,9 @@ _LIMITER = _RateLimiter(max_per_min=450)
 # 质量过滤 + 深度价值层要用的字段 (来自 fina_indicator)
 FIELDS = ('ts_code,ann_date,end_date,roe,roa,debt_to_assets,'
           'ocfps,netprofit_yoy,or_yoy,grossprofit_margin,netprofit_margin,'
-          'q_profit_yoy,profit_to_op,assets_turn')
+          'q_profit_yoy,profit_to_op,assets_turn,'
+          'ocf_to_profit,ocf_to_or,'
+          'q_roe,q_gsprofit_margin,assets_yoy')
 KEEP = FIELDS.split(',')
 _NUM = [c for c in KEEP if c not in ('ts_code', 'ann_date', 'end_date')]
 START_FALLBACK = '20180101'        # 财务要长历史做分位/增速 (潜伏模式看 5 年估值分位)
