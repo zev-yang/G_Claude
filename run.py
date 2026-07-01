@@ -18,7 +18,7 @@ from logic_matrix import LogicMatrixPredictorV5, IntegratedAuditorV5
 from portfolio import build_sector_clusters, diversify_picks, moneyflow_negative_screen
 from backtest import DailyAuditor
 from modeling import build_model, build_models, fit_model, predict_ensemble
-
+from data_loader_longhist import load_universe_longhist   # 新增这行
 
 class _Tee:
     """Mirror everything written to stdout into a log file (terminal output unchanged).
@@ -104,8 +104,8 @@ if __name__ == "__main__":
         # FAMILY_MAP is imported from config.
     try:
         # 1. Load
-        panel = load_universe_audit(CONFIG['stock_data_path'])
-        
+        #panel = load_universe_audit(CONFIG['stock_data_path'])
+        panel = load_universe_longhist()
         # 2. Features
         eng = AlphaLabV25_1()
         panel, feats = eng.run(panel)

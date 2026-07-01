@@ -20,7 +20,7 @@ LH_DIR = 'tushare_cache/_longhist'
 RECENT_GUARD = 3                    # 最近 N 个交易日即使空也不锁定, 留待下次重试 (与 run_data_update 一致)
 
 ENDPOINTS = [
-    ('daily',       'ts_code,trade_date,close'),
+    ('daily',       'ts_code,trade_date,open,high,low,close,vol,amount'),
     ('adj_factor',  'ts_code,trade_date,adj_factor'),
     ('daily_basic', 'ts_code,trade_date,pe_ttm,pb,circ_mv'),
 ]

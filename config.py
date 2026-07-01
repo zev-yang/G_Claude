@@ -14,7 +14,7 @@ os.environ['JUPYTER_IOPUB_DATA_RATE_LIMIT'] = '10000000'
 warnings.filterwarnings('ignore')
 
 # ===================== Dynamic config (Auto) =====================
-auto_start = (datetime.now() - timedelta(days=730)).strftime("%Y-%m-%d")
+auto_start = "2017-06-01"
 RED = "\033[91m"
 GREEN = "\033[92m"
 RESET = "\033[0m"
@@ -70,7 +70,7 @@ CONFIG = {
     "icir_threshold": 0.15,  # === MODIFIED: 行业内较为稳健的初选标准 ===
     "icir_window": 60,          # === MODIFIED: 专门用于筛选特征的中短期窗口 ===
     # ===================== UPGRADE KEYS =====================
-    "max_history_days": 1000,    # was effectively 400 (train_window+100); raise for a real backtest
+    "max_history_days": 4000,    # was effectively 400 (train_window+100); raise for a real backtest
     "enable_hedge": False,       # OFF permanently — hedge is value-destroying (CAGR ~5%, worse DD).
                                  # diagnostics force-flips per combo; run.py uses this default.
     "enable_logic_fusion": False, # SYNCED TO BEST: logic=ON erodes alpha (~34% / ExCAGR -1.94%); OFF = 41.70% winner

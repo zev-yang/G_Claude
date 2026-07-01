@@ -48,19 +48,32 @@ def load_asset_growth(rebal):
     fs = sorted(glob.glob(f'{FUND_DIR}/*.parquet'))
     if not fs:
         raise SystemExit(f"无 {FUND_DIR} — 先更新 fundamentals (fetch_fundamentals)")
-    df = pd.concat([pd.read_parquet(f) for f in fs], ignore_index=True)
+    parts = []
+    for f in fs:
+        try:
+            parts.append(pd.read_parquet(f, engine='fastparquet'))   # 与跑通的 _longhist 同引擎
+        except Exception as e:
+            print(f"  [warn] 读不了 {f}: {e!r}")
+    if not parts:
+        raise SystemExit("fundamentals 分片一个都读不出 — 检查 fastparquet 是否安装/分片是否损坏")
+    df = pd.concat(parts, ignore_index=True)
+    print(f"  [fundamentals] 读到 {len(df)} 行, 列: {list(df.columns)}")
     df['code'] = df['ts_code'].astype(str).str[:6]
-    df['ann'] = pd.to_datetime(df['ann_date'])
+    df['ann'] = pd.to_datetime(df['ann_date'].astype(str), errors='coerce')
     if 'assets_yoy' in df.columns:
         df['ag'] = pd.to_numeric(df['assets_yoy'], errors='coerce')
         src = 'assets_yoy(总资产同比增长率)'
     elif 'total_assets' in df.columns:
-        df['end'] = pd.to_datetime(df['end_date'])
+        df['end'] = pd.to_datetime(df['end_date'].astype(str), errors='coerce')
         df = df.sort_values(['code', 'end'])
         df['ag'] = df.groupby('code')['total_assets'].transform(lambda x: x / x.shift(4) - 1) * 100
         src = 'total_assets 算 YoY'
     else:
-        raise SystemExit("fundamentals 无 assets_yoy/total_assets —— 在 fetch_fundamentals FIELDS 加 'assets_yoy' 重拉 (或我改读 balancesheet)")
+        raise SystemExit(f"fundamentals 无 assets_yoy/total_assets — 现有列: {list(df.columns)}")
+    n_ag = int(df['ag'].notna().sum())
+    print(f"  [fundamentals] assets_yoy 源={src} | 非空 {n_ag} 行 | ann_date {df['ann'].min()} ~ {df['ann'].max()}")
+    if n_ag < 1000:
+        raise SystemExit(f"assets_yoy 非空仅 {n_ag} 行 — 多半是没全量回填(增量重拉历史没铺到), 删缓存重下时确认看到'首次全量回填'")
     df = df.dropna(subset=['ann', 'ag']).sort_values('ann')
     panels = []
     for d in rebal:
@@ -69,7 +82,10 @@ def load_asset_growth(rebal):
             continue
         latest = sub.groupby('code')['ag'].last()
         panels.append(pd.DataFrame({'date': d, 'code': latest.index, 'ag': latest.values}))
+    if not panels:
+        raise SystemExit("PIT as-of 后无数据 — assets_yoy 的 ann_date 可能全晚于调仓日, 检查 ann_date 范围")
     ag = pd.concat(panels).set_index(['date', 'code'])['ag']
+    print(f"  [fundamentals] PIT 对齐完成: {len(ag)} 个 (调仓日×股)\n")
     return ag, src
 
 
