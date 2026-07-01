@@ -102,13 +102,22 @@ def daily_update():
         fetch_financials_tushare.update_financials(pro)
     except Exception as e:
         print(f"  [financials] update FAILED: {e!r} (其余已更新; 修复后重跑即可)")
-# ── 长历史回拉 (value 长样本/生产组合的底座: close+adj_factor+pe/pb/circ_mv 回到2010) ──
+
+    # ── 长历史回拉 (value 长样本/生产组合的底座: close+adj_factor+pe/pb/circ_mv 回到2010) ──
     # 首次会回填 2010->今 (~25-40分钟); 之后每天只补新交易日。失败不影响上面的更新 (独立 try)。
     try:
         import fetch_longhist
         fetch_longhist.update_longhist(pro)
     except Exception as e:
         print(f"  [longhist] update FAILED: {e!r} (其余已更新; 修复后重跑即可)")
+
+    # ── 分红送股 (筛选器"连续分红年数"的底座: 财务质量/避雷) ──
+    # 按 ann_date 增量; 首次拉 2022->今 (~几分钟); 之后只补新公告日。失败不影响上面的更新 (独立 try)。
+    try:
+        import fetch_dividend
+        fetch_dividend.update_dividend(pro)
+    except Exception as e:
+        print(f"  [dividend] update FAILED: {e!r} (其余已更新; 修复后重跑即可)")
 
     print("✅ daily_update done. Increments pulled into tushare_cache/_partial/.")
 
